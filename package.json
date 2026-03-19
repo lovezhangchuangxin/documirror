@@ -11,13 +11,32 @@
   "scripts": {
     "build": "pnpm -r --filter './packages/*' build",
     "clean": "pnpm -r --filter './packages/*' clean",
+    "commitlint": "commitlint --edit",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "lint": "eslint .",
+    "lint-staged": "lint-staged",
+    "prepare": "simple-git-hooks",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs,cjs,mts,cts}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm exec lint-staged && pnpm lint && pnpm format:check",
+    "commit-msg": "pnpm exec commitlint --edit $1",
+    "pre-push": "pnpm typecheck && pnpm test"
+  },
   "devDependencies": {
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
     "@eslint/js": "^9.37.0",
     "@types/fs-extra": "^11.0.4",
     "@types/mime-types": "^2.1.4",
@@ -26,11 +45,13 @@
     "@typescript-eslint/parser": "^8.42.0",
     "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.37.0",
+    "lint-staged": "^16.4.0",
     "prettier": "^3.6.2",
+    "simple-git-hooks": "^2.13.1",
     "tsdown": "^0.21.4",
     "tsx": "^4.20.6",
-    "typescript-eslint": "^8.42.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.42.0",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.2.4"
   }

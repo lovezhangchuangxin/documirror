@@ -141,6 +141,41 @@ pnpm test
 node packages/cli/dist/index.mjs --help
 ```
 
+## Git Hooks
+
+现在执行 `pnpm install` 时，也会通过 `simple-git-hooks` 安装 Git hooks。
+
+在一次 commit 真正成功前：
+
+- `pre-commit` 会依次执行 `lint-staged`、`pnpm lint`、`pnpm format:check`
+- `commit-msg` 会使用 `commitlint` 校验提交信息格式
+
+在一次 push 真正成功前：
+
+- `pre-push` 会执行 `pnpm typecheck` 和 `pnpm test`
+
+提交信息必须符合 `type(scope): subject` 格式，例如：
+
+```text
+feat(core): add incremental translation planner
+fix(cli): validate repo path
+docs(repo): document git hooks
+```
+
+允许的 scope 包括：
+
+- `repo`
+- `docs`
+- `cli`
+- `core`
+- `crawler`
+- `parser`
+- `i18n`
+- `shared`
+- `site-builder`
+- `templates`
+- `adapters-filequeue`
+
 ## CLI 使用示例
 
 初始化镜像仓库：

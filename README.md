@@ -141,6 +141,41 @@ Show CLI help:
 node packages/cli/dist/index.mjs --help
 ```
 
+## Git Hooks
+
+Running `pnpm install` now also installs Git hooks through `simple-git-hooks`.
+
+Before a commit is accepted:
+
+- `pre-commit` runs `lint-staged`, then `pnpm lint`, then `pnpm format:check`
+- `commit-msg` validates the message with `commitlint`
+
+Before a push is accepted:
+
+- `pre-push` runs `pnpm typecheck` and `pnpm test`
+
+Commit messages must use the `type(scope): subject` format, for example:
+
+```text
+feat(core): add incremental translation planner
+fix(cli): validate repo path
+docs(repo): document git hooks
+```
+
+Allowed scopes are:
+
+- `repo`
+- `docs`
+- `cli`
+- `core`
+- `crawler`
+- `parser`
+- `i18n`
+- `shared`
+- `site-builder`
+- `templates`
+- `adapters-filequeue`
+
 ## CLI Usage
 
 Initialize a mirror repository:
