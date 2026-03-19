@@ -1,11 +1,13 @@
 # AGENTS.md
 
-This file is a repository-level guide for AI coding agents and contributors working on DocuMirror.
+This file is the repository-level guide for AI coding agents and contributors working on DocuMirror.
 
-For product-level context, read:
+For product-facing context, read:
 
-- `README.md` for the English project overview
-- `README.zh.md` for the Chinese project overview
+- `README.md` for the English overview
+- `README.zh.md` for the Chinese overview
+
+README files should stay focused on product purpose, scope, workflow, and usage. Repository conventions, contribution rules, and agent-specific instructions belong here.
 
 ## Project Purpose
 
@@ -19,9 +21,9 @@ The current implementation is designed to:
 - import translated results
 - rebuild translated HTML into a deployable static mirror
 
-## Current Scope
+## Active Scope
 
-Treat these as active product constraints unless explicitly changed:
+Treat these as current product constraints unless the task explicitly changes them:
 
 - static-HTML-first documentation sites
 - one source site per mirror repository
@@ -48,12 +50,12 @@ Do not assume support for:
 - `zod` for schemas and validation
 - `vitest` for tests
 
-## Workspace Layout
+## Package Responsibilities
 
 - `packages/cli`
   CLI entrypoint and command wiring
 - `packages/core`
-  orchestration, repository state, pipeline commands
+  orchestration, repository state, and pipeline commands
 - `packages/crawler`
   page and asset crawling
 - `packages/parser`
@@ -65,29 +67,130 @@ Do not assume support for:
 - `packages/site-builder`
   translated HTML assembly and site output
 - `packages/shared`
-  shared types, schemas, hashing, URL/path helpers
+  shared types, schemas, hashing, and URL/path helpers
 - `packages/templates`
   init-time config defaults and task guide text
 
-## Important Invariants
+## Architectural Invariants
 
-These behaviors are central to the current architecture. Preserve them unless the task explicitly changes them.
+These behaviors are central to the current design and should be preserved unless the task explicitly changes them:
 
 - `segmentId` identifies a stable extraction binding for a page + DOM path + kind.
 - `sourceHash` represents the normalized source content used for incremental translation decisions.
 - `translate plan` must only export segments that are new, stale, or missing accepted translations.
 - `translate apply` must reject stale results whose `sourceHash` no longer matches the current source segment.
-- `core` owns orchestration. Feature logic should not be pushed into `cli`.
+- `core` owns orchestration; feature logic should not be pushed into `cli`.
 - shared schemas belong in `packages/shared`.
-- translation-provider coupling should not leak into core workflow for v0.1; use the file-queue adapter unless the task explicitly expands the design.
+- translation-provider coupling should not leak into core workflow for v0.1; prefer the file-queue adapter unless the task explicitly expands the design.
 
-## Common Commands
+## Engineering Rules
 
-Install dependencies:
+- Keep package boundaries clean and avoid cross-package leakage of feature logic.
+- Keep schemas explicit and validated with `zod`.
+- Keep repository state inspectable on disk; do not introduce a database unless explicitly requested.
+- Preserve the static-site-first assumption unless the task explicitly expands scope.
+- Avoid browser automation or heavy runtime dependencies without a clear need.
+- Match the existing ESM and TypeScript style.
+- If a feature changes the task or result JSON contract, update both schemas and documentation.
+
+## Repository Workflow
+
+Install dependencies with:
 
 ```bash
 pnpm install
 ```
+
+The `prepare` script installs Git hooks through `simple-git-hooks`.
+
+Configured hooks:
+
+- `pre-commit`
+  Runs `pnpm exec lint-staged`, `pnpm lint`, and `pnpm format:check`
+- `commit-msg`
+  Runs `pnpm exec commitlint --edit $1`
+- `pre-push`
+  Runs `pnpm typecheck` and `pnpm test`
+
+### Commit Messages
+
+Commit messages must use the `type(scope): subject` format.
+
+Examples:
+
+```text
+feat(core): add incremental translation planner
+fix(cli): validate repo path
+docs(repo): rewrite contribution guide
+```
+
+Use conventional commit types supported by `commitlint`, and always include a scope.
+
+Allowed scopes:
+
+- `repo`
+- `docs`
+- `cli`
+- `core`
+- `crawler`
+- `parser`
+- `i18n`
+- `shared`
+- `site-builder`
+- `templates`
+- `adapters-filequeue`
+
+If a change spans multiple packages, choose the narrowest scope that best represents the primary impact.
+
+## Where To Put Changes
+
+- New CLI flags or commands: `packages/cli`
+- Pipeline orchestration or repository storage: `packages/core`
+- HTML discovery or fetching behavior: `packages/crawler`
+- Extraction heuristics or DOM path logic: `packages/parser`
+- Incremental translation planning or state: `packages/i18n`
+- Task file protocol changes: `packages/adapters-filequeue` and `packages/shared`
+- HTML reinsertion or output behavior: `packages/site-builder`
+- Shared types, config schemas, or utilities: `packages/shared`
+
+## Validation Expectations
+
+For non-trivial code changes, run:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+If the change affects package entrypoints or build output, also run:
+
+```bash
+pnpm build
+```
+
+For documentation-only changes, a full validation pass is not required unless the task explicitly asks for it.
+
+## Documentation Expectations
+
+Update documentation when changing:
+
+- CLI commands or flags
+- repository structure
+- task or result JSON shape
+- supported site scope
+- major workflow assumptions
+- repository conventions such as hooks or commit rules
+
+Documentation ownership rules:
+
+- `README.md` and `README.zh.md` are user-facing and should explain product scope, workflow, and usage.
+- `AGENTS.md` is contributor-facing and should capture repository conventions, engineering rules, and agent guidance.
+- User-facing behavior changes should update both README files.
+- Repository process changes should update `AGENTS.md`.
+- Do not move contribution rules such as commit conventions back into README unless they become directly relevant to end users.
+
+## Common Commands
 
 Build all packages:
 
@@ -109,63 +212,14 @@ Show CLI help:
 node packages/cli/dist/index.mjs --help
 ```
 
-## Working Rules
-
-- Prefer changes that keep package boundaries clean.
-- Keep schemas explicit and validated with `zod`.
-- Keep filesystem state inspectable; do not introduce a database unless explicitly requested.
-- Preserve static-site-first assumptions unless the task explicitly expands scope.
-- Avoid introducing browser automation or heavy runtime dependencies without a clear need.
-- Match the existing ESM/TypeScript style.
-- If a feature changes the task/result JSON contract, update both the schemas and the documentation.
-
-## Where To Put Changes
-
-- New CLI flags or commands: `packages/cli`
-- Pipeline orchestration or repository storage: `packages/core`
-- HTML discovery/fetching behavior: `packages/crawler`
-- Extraction heuristics or DOM path logic: `packages/parser`
-- Incremental translation planning/state: `packages/i18n`
-- Task file protocol changes: `packages/adapters-filequeue` and `packages/shared`
-- HTML reinsertion/output behavior: `packages/site-builder`
-- Shared types/config/schema utilities: `packages/shared`
-
-## Testing Expectations
-
-For non-trivial code changes, run:
-
-```bash
-pnpm lint
-pnpm typecheck
-pnpm test
-```
-
-If behavior changes the build output or package entrypoints, also run:
-
-```bash
-pnpm build
-```
-
-## Documentation Expectations
-
-Update documentation when changing:
-
-- CLI commands or flags
-- repository structure
-- task/result JSON shape
-- supported site scope
-- major workflow assumptions
-
-At minimum, keep `README.md` in sync. Update `README.zh.md` too when the user-facing behavior changes.
-
 ## Current Gaps
 
 The current codebase is an initial foundation, not a complete production crawler. Likely future work includes:
 
 - site-specific profiles for common docs frameworks
 - stronger placeholder and inline-markup protection
-- better asset/link normalization
+- better asset and link normalization
 - richer health reports
 - optional direct adapters for external translation CLIs
 
-When extending the project, prefer incremental additions over large rewrites.
+Prefer incremental additions over large rewrites.

@@ -2,69 +2,66 @@
 
 [中文说明](./README.zh.md)
 
-DocuMirror is a TypeScript monorepo for mirroring and translating static documentation websites.
+DocuMirror is a TypeScript monorepo for building translated mirrors of static documentation websites.
 
-It crawls a source docs site, extracts translatable HTML text and attributes, exports translation task files for external AI agents such as Claude Code or Codex, then reassembles translated content back into HTML to produce a deployable static mirror.
+It crawls a source docs site, extracts translatable HTML text and attributes, exports task files for external AI agents such as Claude Code or Codex, then reassembles translated content into a deployable static mirror.
 
-## Status
+Repository conventions and contribution rules live in [AGENTS.md](./AGENTS.md).
 
-This repository already contains a working v0.1 foundation:
+## Overview
+
+DocuMirror is built for documentation teams that need both:
+
+- the original site structure and URLs
+- a repeatable translation workflow
+- incremental updates instead of full retranslation
+- file-based state that is easy to inspect and automate
+
+The current repository already provides a working v0.1 foundation with:
 
 - CLI commands for `init`, `crawl`, `extract`, `translate plan`, `translate apply`, `build`, `update`, `doctor`, and `status`
-- A `pnpm workspace` monorepo with separated packages for crawl, parse, i18n, build, and CLI
-- Incremental translation planning based on segment-level source hashes
-- File-queue integration for third-party agents
-- Local JSON/JSONL state storage under `.documirror/`
+- a `pnpm` workspace split into crawler, parser, i18n, builder, and CLI packages
+- segment-level incremental translation planning based on `sourceHash`
+- a file-queue adapter for third-party translation agents
+- local JSON/JSONL state stored under `.documirror/`
 
-Current scope is intentionally narrow:
+## Current Scope
 
-- Public, static-HTML-heavy documentation sites
-- One source site per mirror repository
-- One target locale per mirror repository
-- File-based translation workflow only
+The current implementation is intentionally narrow:
 
-Not supported in the current implementation:
+- public, static-HTML-first documentation sites
+- one source site per mirror repository
+- one target locale per mirror repository
+- file-based translation workflow only
 
-- Login-protected sites
+Not currently supported:
+
+- login-protected sites
 - JavaScript-heavy SPA rendering
-- Built-in direct integration with Claude Code / Codex CLI commands
-- Multi-locale mirror repositories
+- built-in direct invocation of Claude Code, Codex, or other CLIs
+- multi-locale mirror repositories
 
-## Why This Exists
+## Pipeline
 
-Most doc translation workflows break down in one of two ways:
-
-- They translate raw markdown or text, but lose the original site structure
-- They mirror HTML, but do not provide a maintainable incremental translation workflow
-
-DocuMirror is designed to keep both:
-
-- the original website shape
-- a structured extraction pipeline
-- incremental translation state
-- a clean handoff to external AI agents
-
-## How It Works
-
-The pipeline is:
+The end-to-end workflow is:
 
 1. `init`
-   Create a mirror repository and `.documirror/` working structure.
+   Create a mirror repository and its `.documirror/` working structure.
    Re-running `init` fills in missing scaffold files without overwriting existing mirror state.
 2. `crawl`
-   Fetch pages and static assets from the source site.
+   Fetch source pages and static assets.
 3. `extract`
    Parse HTML into translatable segments plus DOM assembly mappings.
 4. `translate plan`
-   Generate JSON task files for only new or changed segments.
-5. External agent translation
-   Translate pending task files and write result JSON files.
+   Export task JSON files only for new, stale, or missing translations.
+5. External translation
+   Process pending task files with an external agent and write result JSON files.
 6. `translate apply`
-   Validate and import translated results into the translation store.
+   Validate and import accepted translation results into the translation store.
 7. `build`
-   Reinsert translated content into HTML and emit a static mirror under `site/`.
+   Reinsert translated content into HTML and emit a translated static mirror under `site/`.
 
-For incremental updates, run `update`, then repeat translation/apply/build as needed.
+For incremental updates, run `update`, then repeat translation, apply, and build as needed.
 
 ## Repository Layout
 
@@ -72,20 +69,21 @@ For incremental updates, run `update`, then repeat translation/apply/build as ne
 .
 ├── packages/
 │   ├── adapters-filequeue/  # task file export/import
-│   ├── cli/                 # command line interface
+│   ├── cli/                 # command-line interface
 │   ├── core/                # orchestration and repository state
 │   ├── crawler/             # site crawling and asset discovery
 │   ├── i18n/                # translation state and incremental logic
 │   ├── parser/              # HTML extraction and assembly mapping
-│   ├── shared/              # shared schemas, types, helpers
+│   ├── shared/              # shared schemas, types, and helpers
 │   ├── site-builder/        # translated site output
 │   └── templates/           # init templates and task guide text
+├── AGENTS.md
 ├── README.md
 ├── README.zh.md
 └── package.json
 ```
 
-After `init`, the mirror repository structure looks like this:
+After `init`, a mirror repository uses this working structure:
 
 ```text
 .documirror/
@@ -113,13 +111,13 @@ After `init`, the mirror repository structure looks like this:
 - Node.js `>= 20`
 - `pnpm` `10.x`
 
-## Install
+## Development
+
+Install dependencies:
 
 ```bash
 pnpm install
 ```
-
-## Development
 
 Build all packages:
 
@@ -127,7 +125,7 @@ Build all packages:
 pnpm build
 ```
 
-Run checks:
+Run validation:
 
 ```bash
 pnpm lint
@@ -141,42 +139,7 @@ Show CLI help:
 node packages/cli/dist/index.mjs --help
 ```
 
-## Git Hooks
-
-Running `pnpm install` now also installs Git hooks through `simple-git-hooks`.
-
-Before a commit is accepted:
-
-- `pre-commit` runs `lint-staged`, then `pnpm lint`, then `pnpm format:check`
-- `commit-msg` validates the message with `commitlint`
-
-Before a push is accepted:
-
-- `pre-push` runs `pnpm typecheck` and `pnpm test`
-
-Commit messages must use the `type(scope): subject` format, for example:
-
-```text
-feat(core): add incremental translation planner
-fix(cli): validate repo path
-docs(repo): document git hooks
-```
-
-Allowed scopes are:
-
-- `repo`
-- `docs`
-- `cli`
-- `core`
-- `crawler`
-- `parser`
-- `i18n`
-- `shared`
-- `site-builder`
-- `templates`
-- `adapters-filequeue`
-
-## CLI Usage
+## CLI Quick Start
 
 Initialize a mirror repository:
 
@@ -220,7 +183,7 @@ Run the incremental pipeline:
 node packages/cli/dist/index.mjs update --repo ./my-mirror
 ```
 
-Check repository health:
+Inspect repository health:
 
 ```bash
 node packages/cli/dist/index.mjs doctor --repo ./my-mirror
@@ -229,15 +192,15 @@ node packages/cli/dist/index.mjs status --repo ./my-mirror
 
 ## Translation Task Workflow
 
-DocuMirror does not call external AI tools directly in v0.1.
+DocuMirror does not call external AI tools directly in v0.1. Instead, it exchanges files with them.
 
-Instead, it writes task files into:
+Pending tasks are written to:
 
 ```text
 .documirror/tasks/pending/
 ```
 
-Each task is a JSON document containing:
+Each task JSON includes:
 
 - target locale
 - translation instructions
@@ -247,7 +210,7 @@ Each task is a JSON document containing:
 - source text
 - context such as page URL, DOM path, and tag name
 
-External tools should write result files into:
+External tools should write result files to:
 
 ```text
 .documirror/tasks/done/
@@ -262,19 +225,19 @@ Result files must include:
 
 `translate apply` validates the result schema and only accepts translations whose `sourceHash` still matches the current source segment.
 
-## Incremental Update Model
+## Incremental Translation Model
 
-Incremental behavior is segment-based, not page-based.
+Incremental behavior is segment-based, not page-based:
 
-- Every extracted segment gets a stable `segmentId`
-- Every normalized source text gets a `sourceHash`
-- If the source hash changes, the previous translation becomes stale
-- Only new or stale segments are exported in the next translation plan
-- Existing compatible files under `.documirror/tasks/pending/` are retained across repeated planning runs
+- every extracted segment gets a stable `segmentId`
+- every normalized source text gets a `sourceHash`
+- when the source hash changes, the previous translation becomes stale
+- only new, stale, or missing accepted translations are exported in the next translation plan
+- compatible files already present under `.documirror/tasks/pending/` are retained across repeated planning runs
 
-This keeps translation cost lower when only small portions of a source site change.
+This keeps translation cost low when only a small portion of the source site changes.
 
-## What Gets Extracted
+## Extraction Coverage
 
 The current parser focuses on:
 
@@ -290,41 +253,28 @@ By default it skips:
 - `pre`
 - `code`
 
-Selector and attribute rules are stored in `.documirror/config.json`.
+Selector and attribute rules are configured in `.documirror/config.json`.
 
-## Key Dependencies
-
-The current implementation uses:
-
-- `tsdown` for packaging TypeScript packages
-- `axios` for HTTP requests
-- `cheerio` for HTML parsing and traversal
-- `zod` for schemas and validation
-- `fs-extra` for filesystem operations
-- `fast-glob` for file discovery
-- `commander` for the CLI
-- `vitest` for tests
-
-## Design Notes
+## Design Principles
 
 Some design choices are deliberate:
 
-- File-based state instead of a database
-- File-queue translation integration instead of direct tool coupling
-- Static HTML first, browser automation later if needed
-- ESM-only workspace
+- file-based state instead of a database
+- file-queue translation integration instead of direct tool coupling
+- static HTML first, with browser automation deferred
+- an ESM-only workspace
 
-This keeps the first version simpler, inspectable, and easy to automate in CI or agent workflows.
+This keeps the first version inspectable, automation-friendly, and easier to evolve incrementally.
 
 ## Roadmap
 
 Likely next steps:
 
 - site profiles for Docusaurus, VitePress, and MkDocs
+- stronger placeholder and inline-markup preservation
 - better asset and internal link normalization
-- stronger placeholder and inline-markup preservation rules
+- richer health reports
 - optional direct adapters for external translation CLIs
-- richer reports for failed extraction or assembly drift
 
 ## License
 
