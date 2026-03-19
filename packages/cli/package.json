@@ -1,0 +1,30 @@
+{
+  "name": "@documirror/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "documirror": "./dist/index.mjs"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --out-dir dist --clean",
+    "clean": "rm -rf dist",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@documirror/core": "workspace:*",
+    "@documirror/shared": "workspace:*",
+    "commander": "^14.0.1",
+    "ora": "^9.0.0",
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2"
+  }
+}

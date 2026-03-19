@@ -1,0 +1,27 @@
+{
+  "name": "@documirror/crawler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --out-dir dist --clean",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@documirror/shared": "workspace:*",
+    "axios": "^1.12.2",
+    "cheerio": "^1.1.2",
+    "file-type": "^20.5.0",
+    "mime-types": "^3.0.1",
+    "p-queue": "^8.1.0",
+    "robots-parser": "^3.0.1"
+  }
+}

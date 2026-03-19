@@ -1,0 +1,11 @@
+node_modules
+coverage
+.DS_Store
+
+packages/*/dist
+site
+reports
+
+.documirror/cache
+.documirror/tasks
+.documirror/state/checkpoints

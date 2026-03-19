@@ -1,0 +1,25 @@
+{
+  "name": "@documirror/parser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --out-dir dist --clean",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@documirror/shared": "workspace:*",
+    "cheerio": "^1.1.2",
+    "dom-serializer": "^2.0.0",
+    "entities": "^7.0.0",
+    "htmlparser2": "^10.0.0"
+  }
+}
