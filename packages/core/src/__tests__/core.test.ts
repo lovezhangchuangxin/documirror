@@ -34,6 +34,21 @@ describe("documirror core pipeline", () => {
       targetLocale: "zh-CN",
     });
 
+    const mirrorPackage = JSON.parse(
+      await readFile(join(repoDir, "package.json"), "utf8"),
+    ) as {
+      name: string;
+      scripts: Record<string, string>;
+    };
+    expect(mirrorPackage.name).toBe("documirror-mirror-docs-example-com-zh-cn");
+    expect(mirrorPackage.scripts["documirror:update"]).toBe(
+      "documirror update --repo .",
+    );
+
+    const mirrorReadme = await readFile(join(repoDir, "README.md"), "utf8");
+    expect(mirrorReadme).toContain("Source site: https://docs.example.com");
+    expect(mirrorReadme).toContain("pnpm documirror:update");
+
     const snapshotDir = join(repoDir, ".documirror", "cache", "pages");
     const snapshotPath = join(snapshotDir, "index.html");
     await writeFile(
@@ -123,5 +138,53 @@ describe("documirror core pipeline", () => {
     );
     expect(builtHtml).toContain("ZH:Hello world");
     expect(builtHtml).toContain('lang="zh-CN"');
+  });
+
+  it("merges missing package.json fields without overwriting existing scripts", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await writeFile(
+      join(repoDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "existing-mirror",
+          scripts: {
+            dev: "vite dev",
+            "documirror:update": "custom update command",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    const mirrorPackage = JSON.parse(
+      await readFile(join(repoDir, "package.json"), "utf8"),
+    ) as {
+      name: string;
+      packageManager?: string;
+      scripts: Record<string, string>;
+    };
+
+    expect(mirrorPackage.name).toBe("existing-mirror");
+    expect(mirrorPackage.packageManager).toBe("pnpm@10.22.0");
+    expect(mirrorPackage.scripts.dev).toBe("vite dev");
+    expect(mirrorPackage.scripts["documirror:update"]).toBe(
+      "custom update command",
+    );
+    expect(mirrorPackage.scripts["documirror:crawl"]).toBe(
+      "documirror crawl --repo .",
+    );
+    expect(mirrorPackage.scripts["documirror:build"]).toBe(
+      "documirror build --repo .",
+    );
   });
 });
