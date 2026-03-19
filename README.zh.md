@@ -139,6 +139,17 @@ pnpm test
 node packages/cli/dist/index.mjs --help
 ```
 
+如需本地全局安装 CLI 进行调试，可执行：
+
+```bash
+pnpm build
+cd packages/cli
+pnpm link --global
+documirror --help
+```
+
+链接后的 `documirror` 命令会指向 `packages/cli/dist/index.mjs`，因此修改 CLI 代码后需要先重新构建再执行。
+
 ## CLI 快速开始
 
 初始化镜像仓库：

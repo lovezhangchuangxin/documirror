@@ -139,6 +139,17 @@ Show CLI help:
 node packages/cli/dist/index.mjs --help
 ```
 
+Install the CLI globally for local debugging:
+
+```bash
+pnpm build
+cd packages/cli
+pnpm link --global
+documirror --help
+```
+
+The linked `documirror` command points to `packages/cli/dist/index.mjs`, so rebuild after CLI changes before rerunning it.
+
 ## CLI Quick Start
 
 Initialize a mirror repository:
