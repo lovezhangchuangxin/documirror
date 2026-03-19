@@ -50,6 +50,7 @@ The pipeline is:
 
 1. `init`
    Create a mirror repository and `.documirror/` working structure.
+   Re-running `init` fills in missing scaffold files without overwriting existing mirror state.
 2. `crawl`
    Fetch pages and static assets from the source site.
 3. `extract`
@@ -234,6 +235,7 @@ Incremental behavior is segment-based, not page-based.
 - Every normalized source text gets a `sourceHash`
 - If the source hash changes, the previous translation becomes stale
 - Only new or stale segments are exported in the next translation plan
+- Existing compatible files under `.documirror/tasks/pending/` are retained across repeated planning runs
 
 This keeps translation cost lower when only small portions of a source site change.
 

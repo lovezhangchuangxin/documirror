@@ -50,6 +50,7 @@ DocuMirror 试图同时保留这几件事：
 
 1. `init`
    初始化镜像仓库和 `.documirror/` 工作目录。
+   再次执行 `init` 时，只会补齐缺失的脚手架文件，不会覆盖已有镜像状态。
 2. `crawl`
    抓取源站页面与静态资源。
 3. `extract`
@@ -234,6 +235,7 @@ DocuMirror 会把任务文件写入：
 - 每段归一化后的源文本都会生成 `sourceHash`
 - 如果 `sourceHash` 变化，旧翻译会被标记为 stale
 - 下一次 `translate plan` 只会导出新增或 stale 的 segment
+- 对应当前内容的 `.documirror/tasks/pending/` 任务在重复执行规划时会被保留
 
 这样当源站只改动少量内容时，翻译成本不会放大到整页级别。
 

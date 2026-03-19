@@ -6,8 +6,8 @@ import type {
 } from "@documirror/shared";
 import {
   createTimestamp,
-  translationResultFileSchema,
   translationTaskFileSchema,
+  translationResultFileSchema,
 } from "@documirror/shared";
 
 export function createTaskFile(
@@ -50,4 +50,8 @@ export function createTaskItems(
 
 export function parseResultFile(value: unknown): TranslationResultFile {
   return translationResultFileSchema.parse(value);
+}
+
+export function parseTaskFile(value: unknown): TranslationTaskFile {
+  return translationTaskFileSchema.parse(value);
 }
