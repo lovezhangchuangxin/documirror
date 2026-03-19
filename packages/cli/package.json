@@ -22,8 +22,8 @@
   "dependencies": {
     "@documirror/core": "workspace:*",
     "@documirror/shared": "workspace:*",
-    "commander": "^14.0.1",
-    "ora": "^9.0.0",
+    "commander": "^14.0.3",
+    "ora": "^9.3.0",
     "picocolors": "^1.1.1",
     "prompts": "^2.4.2"
   }
