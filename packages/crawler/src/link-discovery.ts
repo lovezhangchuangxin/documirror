@@ -4,35 +4,50 @@ import { load } from "cheerio";
 
 import { normalizeUrl } from "@documirror/shared";
 
-export function discoverPageLinks(baseUrl: string, html: string): string[] {
-  const $ = load(html);
-  const links = new Set<string>();
+import type { InvalidLinkReference, LinkDiscoveryResult } from "./types";
 
-  $("a[href]").each((_, element) => {
-    const href = $(element).attr("href");
-    const resolved = resolveLink(baseUrl, href);
-    if (resolved) {
-      links.add(resolved);
+export function discoverPageResources(
+  baseUrl: string,
+  html: string,
+): LinkDiscoveryResult {
+  const $ = load(html);
+  const pageLinks = new Set<string>();
+  const assetUrls = new Set<string>();
+  const invalidLinks: InvalidLinkReference[] = [];
+  const seenInvalidLinks = new Set<string>();
+
+  const collect = (
+    collection: Set<string>,
+    rawValue: string | undefined,
+    tagName: string,
+    attributeName: string,
+  ) => {
+    const resolved = resolveLink(baseUrl, rawValue, tagName, attributeName);
+    if (resolved.url) {
+      collection.add(resolved.url);
+      return;
     }
-  });
 
-  return [...links];
-}
-
-export function discoverAssets(baseUrl: string, html: string): string[] {
-  const $ = load(html);
-  const assets = new Set<string>();
-
-  const collect = (value: string | undefined) => {
-    const resolved = resolveLink(baseUrl, value);
-    if (resolved) {
-      assets.add(resolved);
+    if (resolved.issue) {
+      const issueKey = [
+        resolved.issue.tagName,
+        resolved.issue.attributeName,
+        resolved.issue.rawValue,
+      ].join("::");
+      if (!seenInvalidLinks.has(issueKey)) {
+        seenInvalidLinks.add(issueKey);
+        invalidLinks.push(resolved.issue);
+      }
     }
   };
 
+  $("a[href]").each((_, element) => {
+    collect(pageLinks, $(element).attr("href"), element.tagName, "href");
+  });
+
   $("img[src], script[src], source[src], video[src], audio[src]").each(
     (_, element) => {
-      collect($(element).attr("src"));
+      collect(assetUrls, $(element).attr("src"), element.tagName, "src");
     },
   );
 
@@ -43,7 +58,7 @@ export function discoverAssets(baseUrl: string, html: string): string[] {
         (value) => rel.includes(value),
       )
     ) {
-      collect($(element).attr("href"));
+      collect(assetUrls, $(element).attr("href"), element.tagName, "href");
     }
   });
 
@@ -52,18 +67,31 @@ export function discoverAssets(baseUrl: string, html: string): string[] {
     srcset
       ?.split(",")
       .map((candidate) => candidate.trim().split(/\s+/)[0])
-      .forEach(collect);
+      .forEach((candidate) => {
+        collect(assetUrls, candidate, element.tagName, "srcset");
+      });
   });
 
-  return [...assets];
+  return {
+    pageLinks: [...pageLinks],
+    assetUrls: [...assetUrls],
+    invalidLinks,
+  };
 }
 
 export function resolveLink(
   baseUrl: string,
   rawHref: string | undefined,
-): string | null {
+  tagName: string,
+  attributeName: string,
+): {
+  url: string | null;
+  issue?: InvalidLinkReference;
+} {
   if (!rawHref) {
-    return null;
+    return {
+      url: null,
+    };
   }
 
   const trimmed = rawHref.trim();
@@ -73,13 +101,30 @@ export function resolveLink(
     trimmed.startsWith("mailto:") ||
     trimmed.startsWith("javascript:")
   ) {
-    return null;
+    return {
+      url: null,
+    };
   }
 
-  const resolved = new URL(trimmed, baseUrl);
-  if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
-    return null;
-  }
+  try {
+    const resolved = new URL(trimmed, baseUrl);
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      return {
+        url: null,
+      };
+    }
 
-  return normalizeUrl(resolved.toString());
+    return {
+      url: normalizeUrl(resolved.toString()),
+    };
+  } catch {
+    return {
+      url: null,
+      issue: {
+        rawValue: trimmed,
+        tagName,
+        attributeName,
+      },
+    };
+  }
 }

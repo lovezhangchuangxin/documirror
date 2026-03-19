@@ -1,13 +1,11 @@
 import { URL } from "node:url";
 
-import axios from "axios";
 import { fileTypeFromBuffer } from "file-type";
 import mime from "mime-types";
 import PQueue from "p-queue";
 
 import type { Logger, MirrorConfig } from "@documirror/shared";
 import {
-  createTimestamp,
   isSameOrigin,
   normalizeUrl,
   shouldIncludeUrl,
@@ -16,26 +14,81 @@ import {
 } from "@documirror/shared";
 
 import { DEFAULT_USER_AGENT } from "./constants";
-import { discoverAssets, discoverPageLinks } from "./link-discovery";
+import { discoverPageResources } from "./link-discovery";
+import { requestWithRetry } from "./request";
 import { loadRobots } from "./robots";
-import type { CrawledAsset, CrawledPage, CrawlResult } from "./types";
+import type {
+  CrawledAsset,
+  CrawledPage,
+  CrawlIssue,
+  CrawlResult,
+  CrawlSink,
+  CrawlStats,
+} from "./types";
 
 export async function crawlWebsite(
   config: MirrorConfig,
-  logger: Logger,
+  _logger: Logger,
+  sink: CrawlSink = {},
 ): Promise<CrawlResult> {
-  const pageQueue = new PQueue({ concurrency: config.crawlConcurrency });
-  const assetQueue = new PQueue({
-    concurrency: Math.max(1, config.crawlConcurrency),
-  });
+  const queue = new PQueue({ concurrency: config.crawlConcurrency });
   const visitedPages = new Set<string>();
   const scheduledAssets = new Set<string>();
-  const pages: CrawledPage[] = [];
-  const assets: CrawledAsset[] = [];
-  const robots = await loadRobots(config);
+  const issues: CrawlIssue[] = [];
+  const fatalErrors: Error[] = [];
+  const stats = createEmptyCrawlStats();
+  const requestHeaders = {
+    "user-agent": DEFAULT_USER_AGENT,
+    ...config.requestHeaders,
+  };
+  let pageCount = 0;
+  let assetCount = 0;
+
+  const recordIssue = (issue: CrawlIssue) => {
+    issues.push(issue);
+    switch (issue.kind) {
+      case "page-fetch":
+        stats.pageFailures += 1;
+        break;
+      case "asset-fetch":
+        stats.assetFailures += 1;
+        break;
+      case "invalid-link":
+        stats.invalidLinks += 1;
+        break;
+      case "robots":
+        stats.robotsFailures += 1;
+        break;
+    }
+  };
+
+  const trackRequest = (attemptCount: number, timeoutCount: number) => {
+    stats.retriedRequests += Math.max(0, attemptCount - 1);
+    stats.timedOutRequests += timeoutCount;
+  };
+
+  const enqueueTask = (task: () => Promise<void>) => {
+    const scheduled = queue.add(task);
+    scheduled.catch((error: unknown) => {
+      fatalErrors.push(normalizeError(error));
+    });
+  };
+
+  const {
+    robots,
+    issue: robotsIssue,
+    retryCount,
+    timeoutCount,
+  } = await loadRobots(config);
+  stats.retriedRequests += retryCount;
+  stats.timedOutRequests += timeoutCount;
+  if (robotsIssue) {
+    recordIssue(robotsIssue);
+  }
 
   const scheduleAsset = (
     candidateUrl: string,
+    discoveredFrom: string | null,
     initialBuffer?: Buffer,
     hintedContentType?: string,
   ) => {
@@ -48,27 +101,51 @@ export async function crawlWebsite(
     }
 
     scheduledAssets.add(normalized);
-    assetQueue.add(async () => {
+    enqueueTask(async () => {
       let buffer = initialBuffer;
       let contentType = hintedContentType;
 
       if (!buffer) {
-        const response = await axios.get<ArrayBuffer>(normalized, {
-          headers: {
-            "user-agent": DEFAULT_USER_AGENT,
-            ...config.requestHeaders,
-          },
+        const requestResult = await requestWithRetry<ArrayBuffer>({
+          url: normalized,
+          headers: requestHeaders,
           responseType: "arraybuffer",
-          validateStatus: () => true,
+          timeoutMs: config.requestTimeoutMs,
+          retryCount: config.requestRetryCount,
+          retryDelayMs: config.requestRetryDelayMs,
         });
+        trackRequest(requestResult.attemptCount, requestResult.timeoutCount);
 
-        if (response.status >= 400) {
-          logger.warn(`Asset fetch failed ${response.status}: ${normalized}`);
+        if (!requestResult.ok) {
+          recordIssue({
+            kind: "asset-fetch",
+            severity: "warn",
+            url: normalized,
+            discoveredFrom,
+            code: requestResult.code,
+            attemptCount: requestResult.attemptCount,
+            message: `Failed to fetch asset (${requestResult.errorMessage})`,
+          });
           return;
         }
 
-        buffer = Buffer.from(response.data);
-        contentType = response.headers["content-type"] as string | undefined;
+        if (requestResult.response.status >= 400) {
+          recordIssue({
+            kind: "asset-fetch",
+            severity: "warn",
+            url: normalized,
+            discoveredFrom,
+            statusCode: requestResult.response.status,
+            attemptCount: requestResult.attemptCount,
+            message: `Received ${requestResult.response.status} while fetching asset`,
+          });
+          return;
+        }
+
+        buffer = Buffer.from(requestResult.response.data);
+        contentType = requestResult.response.headers["content-type"] as
+          | string
+          | undefined;
       }
 
       if (!buffer) {
@@ -82,12 +159,15 @@ export async function crawlWebsite(
             "application/octet-stream");
       }
 
-      assets.push({
+      const asset: CrawledAsset = {
         url: normalized,
         contentType,
         outputPath: urlToAssetOutputPath(normalized),
         buffer,
-      });
+      };
+
+      assetCount += 1;
+      await sink.onAsset?.(asset);
     });
   };
 
@@ -112,51 +192,94 @@ export async function crawlWebsite(
     }
 
     visitedPages.add(normalized);
-    pageQueue.add(async () => {
+    enqueueTask(async () => {
       if (!robots.isAllowed(normalized, DEFAULT_USER_AGENT)) {
-        logger.warn(`Skipping disallowed by robots.txt: ${normalized}`);
+        stats.skippedByRobots += 1;
         return;
       }
 
-      const response = await axios.get<ArrayBuffer>(normalized, {
-        headers: {
-          "user-agent": DEFAULT_USER_AGENT,
-          ...config.requestHeaders,
-        },
+      const requestResult = await requestWithRetry<ArrayBuffer>({
+        url: normalized,
+        headers: requestHeaders,
         responseType: "arraybuffer",
-        validateStatus: () => true,
+        timeoutMs: config.requestTimeoutMs,
+        retryCount: config.requestRetryCount,
+        retryDelayMs: config.requestRetryDelayMs,
+      });
+      trackRequest(requestResult.attemptCount, requestResult.timeoutCount);
+
+      if (!requestResult.ok) {
+        recordIssue({
+          kind: "page-fetch",
+          severity: "warn",
+          url: normalized,
+          discoveredFrom,
+          code: requestResult.code,
+          attemptCount: requestResult.attemptCount,
+          message: `Failed to fetch page (${requestResult.errorMessage})`,
+        });
+        return;
+      }
+
+      const contentType =
+        requestResult.response.headers["content-type"] ?? "text/html";
+      if (requestResult.response.status >= 400) {
+        recordIssue({
+          kind: "page-fetch",
+          severity: "warn",
+          url: normalized,
+          discoveredFrom,
+          statusCode: requestResult.response.status,
+          attemptCount: requestResult.attemptCount,
+          message: `Received ${requestResult.response.status} while fetching page`,
+        });
+        return;
+      }
+
+      if (!contentType.toLowerCase().includes("html")) {
+        scheduleAsset(
+          normalized,
+          discoveredFrom,
+          Buffer.from(requestResult.response.data),
+          contentType || undefined,
+        );
+        return;
+      }
+
+      const html = Buffer.from(requestResult.response.data).toString("utf8");
+      const discovered = discoverPageResources(normalized, html);
+
+      discovered.invalidLinks.forEach((invalidLink) => {
+        recordIssue({
+          kind: "invalid-link",
+          severity: "warn",
+          url: normalized,
+          discoveredFrom: null,
+          message: `Ignoring invalid ${invalidLink.tagName}[${invalidLink.attributeName}] value "${invalidLink.rawValue}"`,
+        });
       });
 
-      const contentType = response.headers["content-type"] ?? "text/html";
-      if (response.status >= 400) {
-        logger.warn(`Received ${response.status} for ${normalized}`);
-        return;
-      }
+      discovered.assetUrls.forEach((assetUrl) =>
+        scheduleAsset(assetUrl, normalized),
+      );
+      discovered.pageLinks.forEach((linkUrl) =>
+        enqueuePage(linkUrl, normalized),
+      );
 
-      if (!contentType.includes("html")) {
-        scheduleAsset(normalized, Buffer.from(response.data), contentType);
-        return;
-      }
-
-      const html = Buffer.from(response.data).toString("utf8");
-      const discoveredAssets = discoverAssets(normalized, html);
-      const discoveredLinks = discoverPageLinks(normalized, html);
-
-      discoveredAssets.forEach((assetUrl) => scheduleAsset(assetUrl));
-      discoveredLinks.forEach((linkUrl) => enqueuePage(linkUrl, normalized));
-
-      pages.push({
+      const page: CrawledPage = {
         url: normalized,
         canonicalUrl: normalized,
-        status: response.status,
-        contentType,
+        status: requestResult.response.status,
+        contentType: contentType || "text/html",
         outputPath: urlToOutputPath(normalized),
         discoveredFrom,
-        assetRefs: discoveredAssets,
+        assetRefs: discovered.assetUrls,
         html,
-        crawledAt: createTimestamp(),
-      });
-      logger.info(`Crawled ${normalized}`);
+        crawledAt: new Date().toISOString(),
+      };
+
+      pageCount += 1;
+      await sink.onPage?.(page);
     });
   };
 
@@ -164,14 +287,53 @@ export async function crawlWebsite(
     config.entryUrls.length > 0 ? config.entryUrls : [config.sourceUrl];
   entryUrls.forEach((url) => enqueuePage(url, null));
 
-  await pageQueue.onIdle();
-  await assetQueue.onIdle();
-
-  pages.sort((left, right) => left.url.localeCompare(right.url));
-  assets.sort((left, right) => left.url.localeCompare(right.url));
+  await queue.onIdle();
+  if (fatalErrors.length > 0) {
+    throw fatalErrors[0];
+  }
 
   return {
-    pages,
-    assets,
+    pageCount,
+    assetCount,
+    issues: sortIssues(issues),
+    stats,
   };
+}
+
+function createEmptyCrawlStats(): CrawlStats {
+  return {
+    pageFailures: 0,
+    assetFailures: 0,
+    invalidLinks: 0,
+    skippedByRobots: 0,
+    retriedRequests: 0,
+    timedOutRequests: 0,
+    robotsFailures: 0,
+  };
+}
+
+function normalizeError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function sortIssues(issues: CrawlIssue[]): CrawlIssue[] {
+  return [...issues].sort((left, right) => {
+    const severityOrder = compareSeverity(left.severity, right.severity);
+    if (severityOrder !== 0) {
+      return severityOrder;
+    }
+
+    return left.url.localeCompare(right.url);
+  });
+}
+
+function compareSeverity(
+  left: CrawlIssue["severity"],
+  right: CrawlIssue["severity"],
+): number {
+  if (left === right) {
+    return 0;
+  }
+
+  return left === "error" ? -1 : 1;
 }

@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { DEFAULT_CRAWL_CONCURRENCY } from "../constants";
+import {
+  DEFAULT_CRAWL_CONCURRENCY,
+  DEFAULT_REQUEST_RETRY_COUNT,
+  DEFAULT_REQUEST_RETRY_DELAY_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+} from "../constants";
 
 export const selectorRulesSchema = z.object({
   include: z.array(z.string()).default([]),
@@ -23,6 +28,24 @@ export const mirrorConfigSchema = z.object({
     .min(1)
     .max(32)
     .default(DEFAULT_CRAWL_CONCURRENCY),
+  requestTimeoutMs: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(DEFAULT_REQUEST_TIMEOUT_MS),
+  requestRetryCount: z
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .default(DEFAULT_REQUEST_RETRY_COUNT),
+  requestRetryDelayMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .default(DEFAULT_REQUEST_RETRY_DELAY_MS),
   requestHeaders: z.record(z.string(), z.string()).default({}),
   selectors: selectorRulesSchema.default({
     include: [],

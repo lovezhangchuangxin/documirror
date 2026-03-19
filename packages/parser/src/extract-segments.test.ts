@@ -13,6 +13,9 @@ describe("extractSegmentsFromHtml", () => {
       includePatterns: [],
       excludePatterns: [],
       crawlConcurrency: 4,
+      requestTimeoutMs: 15_000,
+      requestRetryCount: 2,
+      requestRetryDelayMs: 500,
       requestHeaders: {},
       selectors: {
         include: ["main article", "main"],

@@ -1,4 +1,5 @@
 import fs from "fs-extra";
+import pLimit from "p-limit";
 import { dirname, join, relative } from "pathe";
 
 import { crawlWebsite } from "@documirror/crawler";
@@ -7,6 +8,7 @@ import {
   createCacheFileName,
   createTimestamp,
   defaultLogger,
+  hashBuffer,
   hashString,
   manifestSchema,
 } from "@documirror/shared";
@@ -22,8 +24,6 @@ export async function crawlMirror(
   const paths = getRepoPaths(repoDir);
   await ensureRepoStructure(paths);
   const config = await loadConfig(paths);
-  const crawlResult = await crawlWebsite(config, logger);
-
   const manifest: Manifest = manifestSchema.parse({
     sourceUrl: config.sourceUrl,
     targetLocale: config.targetLocale,
@@ -31,51 +31,63 @@ export async function crawlMirror(
     pages: {},
     assets: {},
   });
+  const writeLimit = pLimit(Math.max(1, Math.min(config.crawlConcurrency, 8)));
 
-  for (const page of crawlResult.pages) {
-    const snapshotRelativePath = relative(
-      repoDir,
-      join(paths.pagesCacheDir, createCacheFileName(page.url, ".html")),
-    );
-    const snapshotPath = join(repoDir, snapshotRelativePath);
-    await fs.ensureDir(dirname(snapshotPath));
-    await fs.writeFile(snapshotPath, page.html, "utf8");
+  const crawlResult = await crawlWebsite(config, logger, {
+    onPage(page) {
+      return writeLimit(async () => {
+        const snapshotRelativePath = relative(
+          repoDir,
+          join(paths.pagesCacheDir, createCacheFileName(page.url, ".html")),
+        );
+        const snapshotPath = join(repoDir, snapshotRelativePath);
+        await fs.ensureDir(dirname(snapshotPath));
+        await fs.writeFile(snapshotPath, page.html, "utf8");
 
-    const record: PageRecord = {
-      url: page.url,
-      canonicalUrl: page.canonicalUrl,
-      status: page.status,
-      contentType: page.contentType,
-      snapshotPath: snapshotRelativePath,
-      outputPath: page.outputPath,
-      pageHash: hashString(page.html),
-      discoveredFrom: page.discoveredFrom,
-      assetRefs: page.assetRefs,
-    };
+        const record: PageRecord = {
+          url: page.url,
+          canonicalUrl: page.canonicalUrl,
+          status: page.status,
+          contentType: page.contentType,
+          snapshotPath: snapshotRelativePath,
+          outputPath: page.outputPath,
+          pageHash: hashString(page.html),
+          discoveredFrom: page.discoveredFrom,
+          assetRefs: page.assetRefs,
+        };
 
-    manifest.pages[page.url] = record;
-  }
+        manifest.pages[page.url] = record;
+      });
+    },
+    onAsset(asset) {
+      return writeLimit(async () => {
+        const cacheRelativePath = relative(
+          repoDir,
+          join(paths.assetsCacheDir, asset.outputPath),
+        );
+        const cachePath = join(repoDir, cacheRelativePath);
+        await fs.ensureDir(dirname(cachePath));
+        await fs.writeFile(cachePath, asset.buffer);
 
-  for (const asset of crawlResult.assets) {
-    const cacheRelativePath = relative(
-      repoDir,
-      join(paths.assetsCacheDir, asset.outputPath),
-    );
-    const cachePath = join(repoDir, cacheRelativePath);
-    await fs.ensureDir(dirname(cachePath));
-    await fs.writeFile(cachePath, asset.buffer);
-    manifest.assets[asset.url] = {
-      url: asset.url,
-      cachePath: cacheRelativePath,
-      outputPath: asset.outputPath,
-      contentType: asset.contentType,
-      contentHash: hashString(asset.buffer.toString("base64")),
-    };
-  }
+        manifest.assets[asset.url] = {
+          url: asset.url,
+          cachePath: cacheRelativePath,
+          outputPath: asset.outputPath,
+          contentType: asset.contentType,
+          contentHash: hashBuffer(asset.buffer),
+        };
+      });
+    },
+  });
 
+  manifest.generatedAt = createTimestamp();
   await writeJson(paths.manifestPath, manifestSchema.parse(manifest));
+
   return {
-    pageCount: crawlResult.pages.length,
-    assetCount: crawlResult.assets.length,
+    pageCount: crawlResult.pageCount,
+    assetCount: crawlResult.assetCount,
+    issueCount: crawlResult.issues.length,
+    issues: crawlResult.issues,
+    stats: crawlResult.stats,
   };
 }

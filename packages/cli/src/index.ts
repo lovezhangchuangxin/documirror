@@ -18,6 +18,13 @@ import { Command } from "commander";
 import ora from "ora";
 import pc from "picocolors";
 
+import {
+  formatCrawlOutput,
+  formatFatalCrawlMessage,
+  shouldFailCrawl,
+  type CommandOutput,
+} from "./crawl-output";
+
 const program = new Command();
 
 program
@@ -48,7 +55,11 @@ program
   .action(async (options) => {
     await runWithSpinner("Crawling source site", async () => {
       const summary = await crawlMirror(options.repo, defaultLogger);
-      return `Crawled ${summary.pageCount} pages and ${summary.assetCount} assets`;
+      if (shouldFailCrawl(summary)) {
+        throw new Error(formatFatalCrawlMessage(summary));
+      }
+
+      return formatCrawlOutput(summary);
     });
   });
 
@@ -141,12 +152,15 @@ program.parseAsync(process.argv).catch((error: unknown) => {
 
 async function runWithSpinner(
   title: string,
-  run: () => Promise<string>,
+  run: () => Promise<string | CommandOutput>,
 ): Promise<void> {
   const spinner = ora(title).start();
   try {
-    const message = await run();
-    spinner.succeed(message);
+    const result = await run();
+    const output: CommandOutput =
+      typeof result === "string" ? { message: result, details: [] } : result;
+    spinner.succeed(output.message);
+    output.details.forEach((line: string) => console.log(line));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     spinner.fail(message);

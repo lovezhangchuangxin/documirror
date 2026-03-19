@@ -4,6 +4,10 @@ export function hashString(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function hashBuffer(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export function createSegmentId(
   pageUrl: string,
   domPath: string,

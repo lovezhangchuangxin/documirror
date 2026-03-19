@@ -11,6 +11,9 @@ export function createDefaultConfig(
     includePatterns: [],
     excludePatterns: [],
     crawlConcurrency: 4,
+    requestTimeoutMs: 15_000,
+    requestRetryCount: 2,
+    requestRetryDelayMs: 500,
     requestHeaders: {
       "user-agent": "DocuMirror/0.1.0",
     },

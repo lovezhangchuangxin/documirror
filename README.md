@@ -201,6 +201,26 @@ node packages/cli/dist/index.mjs doctor --repo ./my-mirror
 node packages/cli/dist/index.mjs status --repo ./my-mirror
 ```
 
+## Crawl Behavior
+
+Crawler settings live in `.documirror/config.json`.
+
+- `crawlConcurrency` is the total HTTP concurrency across both pages and assets.
+- `requestTimeoutMs`, `requestRetryCount`, and `requestRetryDelayMs` control timeout and bounded retries for transient failures.
+- `crawl` now prints a post-run summary for retries, `robots.txt` skips or fallbacks, invalid links, and sampled failures instead of surfacing raw request stacks.
+- If crawl produces no cached files because entry pages fail or are entirely blocked by `robots.txt`, the command exits with a friendly fatal message.
+
+Typical crawler settings:
+
+```json
+{
+  "crawlConcurrency": 4,
+  "requestTimeoutMs": 15000,
+  "requestRetryCount": 2,
+  "requestRetryDelayMs": 500
+}
+```
+
 ## Translation Task Workflow
 
 DocuMirror does not call external AI tools directly in v0.1. Instead, it exchanges files with them.

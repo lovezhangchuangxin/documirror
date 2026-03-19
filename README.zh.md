@@ -201,6 +201,26 @@ node packages/cli/dist/index.mjs doctor --repo ./my-mirror
 node packages/cli/dist/index.mjs status --repo ./my-mirror
 ```
 
+## Crawl 行为
+
+crawler 相关设置位于 `.documirror/config.json`。
+
+- `crawlConcurrency` 现在表示页面和资源合并后的总 HTTP 并发，而不是分别计算。
+- `requestTimeoutMs`、`requestRetryCount`、`requestRetryDelayMs` 用于控制单次请求超时和瞬时失败时的有限重试。
+- `crawl` 结束后会输出摘要，包括重试次数、`robots.txt` 跳过或降级、忽略的非法链接以及部分失败样本，而不是直接暴露原始请求栈。
+- 如果入口页面全部抓取失败，或全部被 `robots.txt` 阻止，且最终没有任何缓存文件产出，命令会以更友好的错误信息退出。
+
+常见 crawler 配置如下：
+
+```json
+{
+  "crawlConcurrency": 4,
+  "requestTimeoutMs": 15000,
+  "requestRetryCount": 2,
+  "requestRetryDelayMs": 500
+}
+```
+
 ## 翻译任务工作流
 
 当前 v0.1 不直接调用外部 AI 工具，而是通过文件与它们交换任务和结果。
