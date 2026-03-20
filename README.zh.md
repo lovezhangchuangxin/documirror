@@ -19,7 +19,7 @@ DocuMirror 面向这样一类需求：
 
 当前仓库已经提供可运行的 v0.1 基础能力：
 
-- 提供 `init`、`crawl`、`extract`、`translate plan`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
+- 提供 `init`、`crawl`、`extract`、`translate plan`、`translate claim`、`translate verify`、`translate complete`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
 - 使用 `pnpm workspace` 组织 crawler、parser、i18n、builder、CLI 等独立包
 - 基于 `sourceHash` 的 segment 级增量翻译规划
 - 面向外部 agent 的按页面任务装配与短序号内容项
@@ -54,9 +54,9 @@ DocuMirror 面向这样一类需求：
 3. `extract`
    解析 HTML，生成可翻译 segment 和 DOM 装配映射。
 4. `translate plan`
-   仅为新增、过期或缺失翻译的内容导出任务 JSON。
-5. 外部翻译
-   使用外部 agent 处理待翻译任务文件，并写回结果 JSON。
+   仅为新增、过期或缺失翻译的内容导出任务 JSON，并刷新任务清单与看板。
+5. `translate claim` / `translate verify` / `translate complete`
+   按任务领取、填写草稿结果、执行校验，并把通过校验的结果放入 done 队列。
 6. `translate apply`
    校验并导入可接受的翻译结果。
 7. `build`
@@ -105,7 +105,9 @@ DocuMirror 面向这样一类需求：
     ├── applied/
     ├── done/
     ├── in-progress/
-    └── pending/
+    ├── manifest.json
+    ├── pending/
+    └── QUEUE.md
 ```
 
 ## 环境要求
@@ -178,6 +180,19 @@ node packages/cli/dist/index.mjs extract --repo ./my-mirror
 node packages/cli/dist/index.mjs translate plan --repo ./my-mirror
 ```
 
+领取下一个翻译任务：
+
+```bash
+node packages/cli/dist/index.mjs translate claim --repo ./my-mirror
+```
+
+校验并完成一个已领取任务：
+
+```bash
+node packages/cli/dist/index.mjs translate verify --repo ./my-mirror --task <taskId>
+node packages/cli/dist/index.mjs translate complete --repo ./my-mirror --task <taskId> --provider codex
+```
+
 导入翻译结果：
 
 ```bash
@@ -233,6 +248,23 @@ crawler 相关设置位于 `.documirror/config.json`。
 .documirror/tasks/pending/
 ```
 
+任务状态还会写入：
+
+```text
+.documirror/tasks/manifest.json
+.documirror/tasks/QUEUE.md
+```
+
+推荐的 agent 流程：
+
+1. 执行 `translate claim`
+2. 读取 `.documirror/tasks/pending/` 下的任务 JSON
+3. 在 `.documirror/tasks/in-progress/` 下填写草稿结果
+4. 执行 `translate verify`
+5. 根据错误提示修正，直到校验通过
+6. 执行 `translate complete`
+7. 全部任务完成后执行 `translate apply`
+
 每个任务 JSON 包含：
 
 - 目标语言
@@ -244,13 +276,32 @@ crawler 相关设置位于 `.documirror/config.json`。
 - 用反引号包裹的内联代码，用于在保留术语的同时提供完整句子上下文
 - 为了保证被 inline code 打断的句子连贯，任务项中可能会带上相邻但未变更的文本
 
-外部工具应将结果写入：
+草稿结果写入：
+
+```text
+.documirror/tasks/in-progress/
+```
+
+通过校验后的正式结果写入：
 
 ```text
 .documirror/tasks/done/
 ```
 
-结果文件必须包含：
+草稿结果文件必须包含：
+
+- `taskId`
+- 以任务短序号 `id` 对齐的翻译结果
+
+`translate verify` 会检查：
+
+- `translations.length === content.length`
+- `translations[].id` 是否严格按 `1..N`
+- 是否缺失、重复或出现多余 id
+- 是否存在空的 `translatedText`
+- inline code 是否按顺序保留
+
+`translate complete` 会写出正式结果文件，包含：
 
 - `taskId`
 - `provider`

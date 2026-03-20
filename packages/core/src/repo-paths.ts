@@ -13,6 +13,8 @@ export function getRepoPaths(repoDir: string): RepoPaths {
     manifestPath: join(docuRoot, "state", "manifest.json"),
     assemblyPath: join(docuRoot, "state", "assembly.json"),
     glossaryPath: join(docuRoot, "glossary.json"),
+    taskManifestPath: join(docuRoot, "tasks", "manifest.json"),
+    taskQueuePath: join(docuRoot, "tasks", "QUEUE.md"),
     taskMappingsDir: join(docuRoot, "state", "task-mappings"),
     pagesCacheDir: join(docuRoot, "cache", "pages"),
     assetsCacheDir: join(docuRoot, "cache", "assets"),

@@ -88,6 +88,20 @@ export const translationResultItemSchema = z.object({
   translatedText: z.string(),
 });
 
+export const translationDraftResultFileSchema = z.object({
+  schemaVersion: z.literal(2),
+  taskId: z.string(),
+  provider: z.string().optional(),
+  completedAt: z.string().optional(),
+  translations: z
+    .array(translationResultItemSchema)
+    .superRefine(validateUniqueIds),
+});
+
+export type TranslationDraftResultFile = z.infer<
+  typeof translationDraftResultFileSchema
+>;
+
 export const translationResultFileSchema = z.object({
   schemaVersion: z.literal(2),
   taskId: z.string(),
@@ -99,6 +113,104 @@ export const translationResultFileSchema = z.object({
 });
 
 export type TranslationResultFile = z.infer<typeof translationResultFileSchema>;
+
+export const translationTaskStatusSchema = z.enum([
+  "pending",
+  "in-progress",
+  "done",
+  "applied",
+  "invalid",
+]);
+
+export type TranslationTaskStatus = z.infer<typeof translationTaskStatusSchema>;
+
+export const translationTaskClaimFileSchema = z.object({
+  schemaVersion: z.literal(1),
+  taskId: z.string(),
+  claimedAt: z.string(),
+  taskFile: z.string(),
+  draftResultFile: z.string(),
+});
+
+export type TranslationTaskClaimFile = z.infer<
+  typeof translationTaskClaimFileSchema
+>;
+
+export const translationVerificationIssueSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  jsonPath: z.string(),
+});
+
+export type TranslationVerificationIssue = z.infer<
+  typeof translationVerificationIssueSchema
+>;
+
+export const translationVerificationReportSchema = z.object({
+  schemaVersion: z.literal(1),
+  taskId: z.string(),
+  checkedAt: z.string(),
+  draftResultFile: z.string(),
+  draftResultHash: z.string(),
+  ok: z.boolean(),
+  errorCount: z.number().int().nonnegative(),
+  warningCount: z.number().int().nonnegative(),
+  errors: z.array(translationVerificationIssueSchema),
+  warnings: z.array(translationVerificationIssueSchema),
+});
+
+export type TranslationVerificationReport = z.infer<
+  typeof translationVerificationReportSchema
+>;
+
+export const translationTaskManifestEntrySchema = z.object({
+  taskId: z.string(),
+  page: z.object({
+    url: z.string(),
+    title: z.string().optional(),
+  }),
+  status: translationTaskStatusSchema,
+  contentCount: z.number().int().nonnegative(),
+  taskFile: z.string(),
+  draftResultFile: z.string().optional(),
+  doneResultFile: z.string().optional(),
+  claimedAt: z.string().optional(),
+  completedAt: z.string().optional(),
+  provider: z.string().optional(),
+  lastVerifiedAt: z.string().optional(),
+  lastVerifyStatus: z.enum(["pass", "fail"]).optional(),
+  lastVerifyErrorCount: z.number().int().nonnegative().optional(),
+});
+
+export type TranslationTaskManifestEntry = z.infer<
+  typeof translationTaskManifestEntrySchema
+>;
+
+export const translationTaskManifestSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  inProgress: z.number().int().nonnegative(),
+  done: z.number().int().nonnegative(),
+  applied: z.number().int().nonnegative(),
+  invalid: z.number().int().nonnegative(),
+});
+
+export type TranslationTaskManifestSummary = z.infer<
+  typeof translationTaskManifestSummarySchema
+>;
+
+export const translationTaskManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  generatedAt: z.string(),
+  sourceUrl: z.string(),
+  targetLocale: z.string(),
+  summary: translationTaskManifestSummarySchema,
+  tasks: z.array(translationTaskManifestEntrySchema),
+});
+
+export type TranslationTaskManifest = z.infer<
+  typeof translationTaskManifestSchema
+>;
 
 export const translationTaskMappingSegmentRefSchema = z.object({
   segmentId: z.string(),

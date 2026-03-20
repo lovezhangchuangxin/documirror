@@ -6,12 +6,14 @@ import {
   defaultLogger,
   manifestSchema,
   mirrorConfigSchema,
+  translationTaskManifestSchema,
 } from "@documirror/shared";
 import {
   createDefaultConfig,
   createMirrorRepoPackageJson,
   createMirrorRepoReadme,
   createTaskGuide,
+  createTaskQueuePlaceholder,
 } from "@documirror/templates";
 
 import { getRepoPaths } from "./repo-paths";
@@ -47,8 +49,32 @@ export async function initMirrorRepository(
   await writeScaffoldJsonIfMissing(paths.manifestPath, manifest, logger);
   await writeScaffoldJsonIfMissing(paths.assemblyPath, [], logger);
   await writeScaffoldJsonIfMissing(paths.glossaryPath, [], logger);
+  await writeScaffoldJsonIfMissing(
+    paths.taskManifestPath,
+    translationTaskManifestSchema.parse({
+      schemaVersion: 1,
+      generatedAt: createTimestamp(),
+      sourceUrl: config.sourceUrl,
+      targetLocale: config.targetLocale,
+      summary: {
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        done: 0,
+        applied: 0,
+        invalid: 0,
+      },
+      tasks: [],
+    }),
+    logger,
+  );
   await writeScaffoldTextIfMissing(paths.segmentsPath, "", logger);
   await writeScaffoldTextIfMissing(paths.translationsPath, "", logger);
+  await writeScaffoldTextIfMissing(
+    paths.taskQueuePath,
+    createTaskQueuePlaceholder(),
+    logger,
+  );
   await writeScaffoldTextIfMissing(
     join(paths.docuRoot, "TASKS.md"),
     createTaskGuide(),

@@ -5,12 +5,15 @@ import process from "node:process";
 import {
   applyTranslations,
   buildMirror,
+  claimTranslationTask,
+  completeTranslationTask,
   crawlMirror,
   doctorMirror,
   extractMirror,
   getMirrorStatus,
   initMirrorRepository,
   planTranslations,
+  verifyTranslationTask,
   updateMirror,
 } from "@documirror/core";
 import type { Logger } from "@documirror/shared";
@@ -102,6 +105,88 @@ translate
     await runWithSpinner("Planning translation tasks", async ({ logger }) => {
       const summary = await planTranslations(options.repo, logger);
       return `Created ${summary.taskCount} page tasks for ${summary.segmentCount} segments`;
+    });
+  });
+
+translate
+  .command("claim")
+  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option("--task <taskId>", "specific task id to claim")
+  .action(async (options) => {
+    await runWithSpinner("Claiming translation task", async ({ logger }) => {
+      const summary = await claimTranslationTask(
+        options.repo,
+        {
+          taskId: options.task,
+        },
+        logger,
+      );
+      return {
+        message: `Claimed ${summary.taskId}`,
+        details: [
+          `task file: ${summary.taskFile}`,
+          `draft result: ${summary.draftResultFile}`,
+          `next: documirror translate verify --repo ${options.repo} --task ${summary.taskId}`,
+        ],
+      };
+    });
+  });
+
+translate
+  .command("verify")
+  .requiredOption("--task <taskId>", "task id to verify")
+  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .action(async (options) => {
+    await runWithSpinner("Verifying translation draft", async ({ logger }) => {
+      const summary = await verifyTranslationTask(
+        options.repo,
+        options.task,
+        logger,
+      );
+      if (!summary.ok) {
+        summary.errors.slice(0, 5).forEach((issue) => {
+          console.error(`[${issue.code}] ${issue.jsonPath}: ${issue.message}`);
+        });
+        if (summary.errorCount > 5) {
+          console.error(
+            `... ${summary.errorCount - 5} more errors in ${summary.reportPath}`,
+          );
+        }
+        throw new Error(
+          `Verification failed for ${summary.taskId}: ${summary.errorCount} errors, report ${summary.reportPath}`,
+        );
+      }
+
+      return {
+        message: `Verified ${summary.taskId}`,
+        details: [
+          `report: ${summary.reportPath}`,
+          `errors: ${summary.errorCount}`,
+          `warnings: ${summary.warningCount}`,
+        ],
+      };
+    });
+  });
+
+translate
+  .command("complete")
+  .requiredOption("--task <taskId>", "task id to complete")
+  .requiredOption("--provider <provider>", "agent or provider name")
+  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .action(async (options) => {
+    await runWithSpinner("Completing translation task", async ({ logger }) => {
+      const summary = await completeTranslationTask(
+        options.repo,
+        {
+          taskId: options.task,
+          provider: options.provider,
+        },
+        logger,
+      );
+      return {
+        message: `Completed ${summary.taskId}`,
+        details: [`result file: ${summary.resultFile}`],
+      };
     });
   });
 

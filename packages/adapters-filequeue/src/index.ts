@@ -1,10 +1,12 @@
 import type {
+  TranslationDraftResultFile,
   TranslationResultFile,
   TranslationTaskFile,
   TranslationTaskMappingFile,
 } from "@documirror/shared";
 import {
   createTimestamp,
+  translationDraftResultFileSchema,
   translationResultFileSchema,
   translationTaskFileSchema,
   translationTaskMappingFileSchema,
@@ -104,6 +106,12 @@ export function createTaskBundle(
 
 export function parseResultFile(value: unknown): TranslationResultFile {
   return translationResultFileSchema.parse(value);
+}
+
+export function parseDraftResultFile(
+  value: unknown,
+): TranslationDraftResultFile {
+  return translationDraftResultFileSchema.parse(value);
 }
 
 export function parseTaskFile(value: unknown): TranslationTaskFile {

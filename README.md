@@ -19,7 +19,7 @@ DocuMirror is built for documentation teams that need both:
 
 The current repository already provides a working v0.1 foundation with:
 
-- CLI commands for `init`, `crawl`, `extract`, `translate plan`, `translate apply`, `build`, `update`, `doctor`, and `status`
+- CLI commands for `init`, `crawl`, `extract`, `translate plan`, `translate claim`, `translate verify`, `translate complete`, `translate apply`, `build`, `update`, `doctor`, and `status`
 - a `pnpm` workspace split into crawler, parser, i18n, builder, and CLI packages
 - segment-level incremental translation planning based on `sourceHash`
 - page-based translation task packs with short item ids for external agents
@@ -54,9 +54,9 @@ The end-to-end workflow is:
 3. `extract`
    Parse HTML into translatable segments plus DOM assembly mappings.
 4. `translate plan`
-   Export task JSON files only for new, stale, or missing translations.
-5. External translation
-   Process pending task files with an external agent and write result JSON files.
+   Export task JSON files only for new, stale, or missing translations, and refresh the task queue manifest/checklist.
+5. `translate claim` / `translate verify` / `translate complete`
+   Claim one task at a time, write a draft result, validate it, then finalize it into the done queue.
 6. `translate apply`
    Validate and import accepted translation results into the translation store.
 7. `build`
@@ -105,7 +105,9 @@ After `init`, a mirror repository uses this working structure:
     ├── applied/
     ├── done/
     ├── in-progress/
-    └── pending/
+    ├── manifest.json
+    ├── pending/
+    └── QUEUE.md
 ```
 
 ## Requirements
@@ -178,6 +180,19 @@ Generate translation tasks:
 node packages/cli/dist/index.mjs translate plan --repo ./my-mirror
 ```
 
+Claim the next translation task:
+
+```bash
+node packages/cli/dist/index.mjs translate claim --repo ./my-mirror
+```
+
+Verify and complete a claimed task:
+
+```bash
+node packages/cli/dist/index.mjs translate verify --repo ./my-mirror --task <taskId>
+node packages/cli/dist/index.mjs translate complete --repo ./my-mirror --task <taskId> --provider codex
+```
+
 Apply translated results:
 
 ```bash
@@ -233,6 +248,23 @@ Pending tasks are written to:
 .documirror/tasks/pending/
 ```
 
+Queue state is also written to:
+
+```text
+.documirror/tasks/manifest.json
+.documirror/tasks/QUEUE.md
+```
+
+Recommended agent workflow:
+
+1. Run `translate claim`
+2. Read the task JSON under `.documirror/tasks/pending/`
+3. Fill the draft result scaffold under `.documirror/tasks/in-progress/`
+4. Run `translate verify`
+5. Fix every reported issue until verification passes
+6. Run `translate complete`
+7. Run `translate apply` after all queued tasks are complete
+
 Each task JSON includes:
 
 - target locale
@@ -244,13 +276,32 @@ Each task JSON includes:
 - inline code rendered with backticks so terminology stays in sentence context without being translated
 - unchanged neighboring text may be included when needed to keep a split sentence coherent around inline code
 
-External tools should write result files to:
+Draft results are written to:
+
+```text
+.documirror/tasks/in-progress/
+```
+
+Final verified result files are written to:
 
 ```text
 .documirror/tasks/done/
 ```
 
-Result files must include:
+Draft result files must include:
+
+- `taskId`
+- translated items keyed by the short task `id`
+
+`translate verify` checks:
+
+- `translations.length === content.length`
+- `translations[].id` is strictly `1..N`
+- no missing, duplicate, or extra ids
+- no empty `translatedText`
+- inline code spans are preserved in order
+
+`translate complete` writes final result files with:
 
 - `taskId`
 - `provider`

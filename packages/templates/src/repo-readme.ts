@@ -28,10 +28,13 @@ pnpm --filter @documirror/cli link --global
 - \`.documirror/state/manifest.json\`: page and asset manifest
 - \`.documirror/content/segments.jsonl\`: extracted source segments
 - \`.documirror/content/translations.jsonl\`: accepted translations
-- \`.documirror/tasks/pending/\`: translation tasks for external agents
-- \`.documirror/tasks/done/\`: translation result files waiting to be applied
+- \`.documirror/tasks/pending/\`: generated translation task files
+- \`.documirror/tasks/in-progress/\`: claim files and draft result files
+- \`.documirror/tasks/done/\`: verified result files waiting to be applied
+- \`.documirror/tasks/manifest.json\`: machine-readable queue state
+- \`.documirror/tasks/QUEUE.md\`: generated checklist for agents
 - \`site/\`: built translated static site output
-- \`reports/\`: doctor and verification reports
+- \`reports/\`: doctor and translation verification reports
 
 ## Common Commands
 
@@ -49,7 +52,20 @@ pnpm documirror:extract
 pnpm documirror:translate:plan
 \`\`\`
 
-After an external AI agent writes result files into \`.documirror/tasks/done/\`, apply them:
+Claim the next translation task:
+
+\`\`\`bash
+pnpm documirror:translate:claim
+\`\`\`
+
+Verify and complete a claimed task:
+
+\`\`\`bash
+pnpm documirror:translate:verify -- --task <taskId>
+pnpm documirror:translate:complete -- --task <taskId> --provider <agent-name>
+\`\`\`
+
+Apply verified results:
 
 \`\`\`bash
 pnpm documirror:translate:apply
@@ -71,12 +87,15 @@ pnpm documirror:doctor
 ## Translation Workflow
 
 1. Run \`pnpm documirror:update\`
-2. Read task files from \`.documirror/tasks/pending/\`
-3. Translate each page task with your preferred AI agent using the short item ids in the JSON, keeping any inline code wrapped in backticks unchanged
-4. Write result JSON files into \`.documirror/tasks/done/\`
-5. Run \`pnpm documirror:translate:apply\`
-6. Run \`pnpm documirror:build\`
+2. Check \`.documirror/tasks/QUEUE.md\`
+3. Claim the next task with \`pnpm documirror:translate:claim\`
+4. Translate into \`.documirror/tasks/in-progress/<taskId>.result.json\`
+5. Run \`pnpm documirror:translate:verify -- --task <taskId>\`
+6. Fix every reported error until verification passes
+7. Run \`pnpm documirror:translate:complete -- --task <taskId> --provider <agent-name>\`
+8. After all tasks are complete, run \`pnpm documirror:translate:apply\`
+9. Run \`pnpm documirror:build\`
 
-For task and result JSON examples, see \`.documirror/TASKS.md\`.
+For the detailed agent operating rules, see \`.documirror/TASKS.md\`.
 `;
 }

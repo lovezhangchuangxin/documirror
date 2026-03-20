@@ -3,7 +3,7 @@ import type {
   CrawlProgress,
   CrawlStats,
 } from "@documirror/crawler";
-import type { Logger } from "@documirror/shared";
+import type { Logger, TranslationVerificationIssue } from "@documirror/shared";
 
 export type RepoPaths = {
   docuRoot: string;
@@ -11,6 +11,8 @@ export type RepoPaths = {
   manifestPath: string;
   assemblyPath: string;
   glossaryPath: string;
+  taskManifestPath: string;
+  taskQueuePath: string;
   taskMappingsDir: string;
   pagesCacheDir: string;
   assetsCacheDir: string;
@@ -53,6 +55,27 @@ export type PlanSummary = {
 export type ApplySummary = {
   appliedFiles: number;
   appliedSegments: number;
+};
+
+export type ClaimSummary = {
+  taskId: string;
+  taskFile: string;
+  draftResultFile: string;
+};
+
+export type VerifySummary = {
+  taskId: string;
+  ok: boolean;
+  reportPath: string;
+  errorCount: number;
+  warningCount: number;
+  errors: TranslationVerificationIssue[];
+  warnings: TranslationVerificationIssue[];
+};
+
+export type CompleteSummary = {
+  taskId: string;
+  resultFile: string;
 };
 
 export type DoctorSummary = {
