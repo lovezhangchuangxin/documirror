@@ -39,6 +39,7 @@ export const segmentKindSchema = z.enum(["text", "attr", "meta"]);
 
 export const segmentRecordSchema = z.object({
   segmentId: z.string(),
+  reuseKey: z.string().optional(),
   pageUrl: z.string(),
   domPath: z.string(),
   kind: segmentKindSchema,

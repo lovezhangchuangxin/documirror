@@ -1,3 +1,5 @@
+import { open } from "node:fs/promises";
+
 import fg from "fast-glob";
 import fs from "fs-extra";
 import { nanoid } from "nanoid";
@@ -11,7 +13,11 @@ import {
   parseTaskFile,
   parseTaskMappingFile,
 } from "@documirror/adapters-filequeue";
-import { findPendingSegments, markStaleTranslations } from "@documirror/i18n";
+import {
+  carryForwardTranslations,
+  findPendingSegments,
+  markStaleTranslations,
+} from "@documirror/i18n";
 import {
   buildTranslationTaskUnits,
   type TranslationTaskUnit,
@@ -34,8 +40,10 @@ import type {
 } from "@documirror/shared";
 import {
   createTimestamp,
+  DEFAULT_TASK_LEASE_MINUTES,
   defaultLogger,
   hashString,
+  normalizeText,
   translationTaskClaimFileSchema,
   translationTaskManifestEntrySchema,
   translationTaskManifestSchema,
@@ -57,10 +65,14 @@ import type {
   ClaimSummary,
   CompleteSummary,
   PlanSummary,
+  ReclaimExpiredSummary,
+  ReleaseSummary,
   VerifySummary,
 } from "./types";
 
 const VERIFY_REPORT_DIR = "translation-verify";
+const PLACEHOLDER_TOKEN_REGEX =
+  /\{\{[^{}]+\}\}|\{[A-Za-z0-9_.-]+\}|%(\d+\$)?[+#0\- ]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[sdifo]|<\/?\d+>|\$[A-Z_][A-Z0-9_]*/gu;
 const TASK_STATUS_ORDER = {
   pending: 0,
   "in-progress": 1,
@@ -80,6 +92,15 @@ type RetainPendingTasksResult = {
   invalidatedTaskIds: string[];
 };
 
+type NormalizedTaskClaimFile = Omit<
+  TranslationTaskClaimFile,
+  "claimId" | "claimedBy" | "leaseUntil"
+> & {
+  claimId: string;
+  claimedBy: string;
+  leaseUntil: string;
+};
+
 export async function planTranslations(
   repoDir: string,
   logger: Logger = defaultLogger,
@@ -89,7 +110,10 @@ export async function planTranslations(
   const manifest = await loadManifest(paths);
   const segments = await loadSegments(paths);
   const currentTranslations = await loadTranslations(paths);
-  const translations = markStaleTranslations(segments, currentTranslations);
+  const translations = carryForwardTranslations(
+    segments,
+    markStaleTranslations(segments, currentTranslations),
+  );
   await writeJsonl(paths.translationsPath, translations);
 
   const pendingSegments = findPendingSegments(segments, translations);
@@ -103,8 +127,7 @@ export async function planTranslations(
   const glossary = await readJson<JsonValue[]>(paths.glossaryPath, []);
   const { retainedPageUrls, retainedTaskCount, invalidatedTaskIds } =
     await retainPendingTasks(
-      paths.taskMappingsDir,
-      paths.tasksPendingDir,
+      paths,
       config.sourceUrl,
       config.targetLocale,
       plannedPages,
@@ -149,26 +172,45 @@ export async function planTranslations(
   };
 }
 
+export async function refreshTranslationTaskManifest(
+  repoDir: string,
+  logger: Logger = defaultLogger,
+): Promise<TranslationTaskManifest> {
+  const paths = getRepoPaths(repoDir);
+  const config = await loadConfig(paths);
+  return syncTaskManifest(
+    repoDir,
+    config.sourceUrl,
+    config.targetLocale,
+    logger,
+  );
+}
+
 export async function claimTranslationTask(
   repoDir: string,
   options: {
     taskId?: string;
+    workerId?: string;
+    leaseMinutes?: number;
   } = {},
   logger: Logger = defaultLogger,
 ): Promise<ClaimSummary> {
   const paths = getRepoPaths(repoDir);
   const config = await loadConfig(paths);
+  const workerId = options.workerId?.trim() || "unknown";
+  const leaseMinutes = normalizeLeaseMinutes(options.leaseMinutes);
+  await reclaimExpiredTaskClaims(paths, logger);
   const taskManifest = await syncTaskManifest(
     repoDir,
     config.sourceUrl,
     config.targetLocale,
     logger,
   );
-  const candidate = options.taskId
-    ? taskManifest.tasks.find((task) => task.taskId === options.taskId)
-    : taskManifest.tasks.find((task) => task.status === "pending");
+  const candidates = options.taskId
+    ? [taskManifest.tasks.find((task) => task.taskId === options.taskId)]
+    : taskManifest.tasks.filter((task) => task.status === "pending");
 
-  if (!candidate) {
+  if (candidates.length === 0 || !candidates[0]) {
     throw new Error(
       options.taskId
         ? `Task ${options.taskId} was not found in the current translation queue`
@@ -176,42 +218,114 @@ export async function claimTranslationTask(
     );
   }
 
-  if (candidate.status !== "pending") {
+  if (options.taskId && candidates[0].status !== "pending") {
+    const claimOwner = candidates[0].claimedBy
+      ? ` by ${candidates[0].claimedBy}`
+      : "";
+    const leaseUntil = candidates[0].leaseUntil
+      ? ` until ${candidates[0].leaseUntil}`
+      : "";
     throw new Error(
-      `Task ${candidate.taskId} is ${candidate.status} and cannot be claimed`,
+      `Task ${candidates[0].taskId} is ${candidates[0].status}${claimOwner}${leaseUntil} and cannot be claimed`,
     );
   }
 
-  const task = parseTaskFile(
-    await readJson(getPendingTaskPath(paths, candidate.taskId), {}),
-  );
-  const claimedAt = createTimestamp();
-  const draftResultPath = getDraftResultPath(paths, candidate.taskId);
-  const taskFile = toRepoRelativePath(
-    repoDir,
-    getPendingTaskPath(paths, candidate.taskId),
-  );
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
 
-  if (!(await fs.pathExists(draftResultPath))) {
-    await writeJson(draftResultPath, {
-      schemaVersion: 2,
+    const claimed = await tryClaimTask(repoDir, paths, {
       taskId: candidate.taskId,
-      translations: task.content.map((item) => ({
-        id: item.id,
-        translatedText: "",
-      })),
+      workerId,
+      leaseMinutes,
     });
+    if (claimed) {
+      await syncTaskManifest(
+        repoDir,
+        config.sourceUrl,
+        config.targetLocale,
+        logger,
+      );
+      return claimed;
+    }
   }
 
-  await writeJson(
-    getTaskClaimPath(paths, candidate.taskId),
-    translationTaskClaimFileSchema.parse({
-      schemaVersion: 1,
-      taskId: candidate.taskId,
-      claimedAt,
-      taskFile,
-      draftResultFile: toRepoRelativePath(repoDir, draftResultPath),
-    }),
+  throw new Error(
+    options.taskId
+      ? `Task ${options.taskId} was claimed by another worker before it could be claimed`
+      : "No pending translation tasks are available to claim",
+  );
+}
+
+export async function releaseTranslationTask(
+  repoDir: string,
+  options: {
+    taskId: string;
+    dropDraft?: boolean;
+  },
+  logger: Logger = defaultLogger,
+): Promise<ReleaseSummary> {
+  const paths = getRepoPaths(repoDir);
+  const config = await loadConfig(paths);
+  const taskPath = getPendingTaskPath(paths, options.taskId);
+  const claimPath = getTaskClaimPath(paths, options.taskId);
+  const doneResultPath = getDoneResultPath(paths, options.taskId);
+
+  if (!(await fs.pathExists(taskPath))) {
+    throw new Error(
+      `Task ${options.taskId} was not found in the current translation queue`,
+    );
+  }
+
+  if (await fs.pathExists(doneResultPath)) {
+    throw new Error(
+      `Task ${options.taskId} is already complete and cannot be released`,
+    );
+  }
+
+  const claim = await loadClaimFile(claimPath, logger);
+  if (!claim) {
+    throw new Error(`Task ${options.taskId} is not currently claimed`);
+  }
+
+  await fs.remove(claimPath);
+  await fs.remove(getVerificationReportPath(paths, options.taskId));
+
+  let removedDraft = false;
+  if (options.dropDraft) {
+    await fs.remove(getDraftResultPath(paths, options.taskId));
+    removedDraft = true;
+  }
+
+  await syncTaskManifest(
+    repoDir,
+    config.sourceUrl,
+    config.targetLocale,
+    logger,
+  );
+  return {
+    taskId: options.taskId,
+    removedDraft,
+    wasExpired: isClaimExpired(claim),
+  };
+}
+
+export async function reclaimExpiredTranslationTasks(
+  repoDir: string,
+  options: {
+    dropDraft?: boolean;
+  } = {},
+  logger: Logger = defaultLogger,
+): Promise<ReclaimExpiredSummary> {
+  const paths = getRepoPaths(repoDir);
+  const config = await loadConfig(paths);
+  const { taskIds, removedDraftCount } = await reclaimExpiredTaskClaims(
+    paths,
+    logger,
+    {
+      dropDraft: options.dropDraft,
+    },
   );
 
   await syncTaskManifest(
@@ -221,9 +335,9 @@ export async function claimTranslationTask(
     logger,
   );
   return {
-    taskId: candidate.taskId,
-    taskFile,
-    draftResultFile: toRepoRelativePath(repoDir, draftResultPath),
+    reclaimedTaskCount: taskIds.length,
+    taskIds,
+    removedDraftCount,
   };
 }
 
@@ -255,6 +369,7 @@ export async function verifyTranslationTask(
   if (!mapping) {
     throw new Error(`Task mapping for ${taskId} is missing or unreadable`);
   }
+  const claim = await loadClaimFile(getTaskClaimPath(paths, taskId), logger);
 
   const draftBody = await fs.readFile(draftResultPath, "utf8");
   const draftResultHash = hashString(draftBody);
@@ -273,6 +388,14 @@ export async function verifyTranslationTask(
     issues.push(...validateTaskStructure(task));
     issues.push(...validateTaskFreshness(task, mapping, segmentIndex));
     issues.push(...validateTranslationsAgainstTask(task, mapping, draft));
+    warnings.push(...collectTranslationWarnings(task, draft));
+    if (claim && isClaimExpired(claim)) {
+      issues.push({
+        code: "claim_expired",
+        message: `Task ${taskId} claim expired at ${claim.leaseUntil}; reclaim the task before completing it`,
+        jsonPath: "$",
+      });
+    }
   }
 
   const report = translationVerificationReportSchema.parse({
@@ -281,11 +404,13 @@ export async function verifyTranslationTask(
     checkedAt,
     draftResultFile: toRepoRelativePath(repoDir, draftResultPath),
     draftResultHash,
+    claimId: claim?.claimId,
+    claimedBy: claim?.claimedBy,
     ok: issues.length === 0,
     errorCount: issues.length,
-    warningCount: warnings.length,
+    warningCount: dedupeIssues(warnings).length,
     errors: issues,
-    warnings,
+    warnings: dedupeIssues(warnings),
   });
   const reportPath = getVerificationReportPath(paths, taskId);
   await writeJson(reportPath, report);
@@ -323,6 +448,10 @@ export async function completeTranslationTask(
   const taskPath = getPendingTaskPath(paths, options.taskId);
   const draftResultPath = getDraftResultPath(paths, options.taskId);
   const reportPath = getVerificationReportPath(paths, options.taskId);
+  const claim = await loadClaimFile(
+    getTaskClaimPath(paths, options.taskId),
+    logger,
+  );
 
   if (!(await fs.pathExists(taskPath))) {
     throw new Error(
@@ -333,6 +462,18 @@ export async function completeTranslationTask(
   if (!(await fs.pathExists(draftResultPath))) {
     throw new Error(
       `Draft result file is missing: ${toRepoRelativePath(repoDir, draftResultPath)}`,
+    );
+  }
+
+  if (!claim) {
+    throw new Error(
+      `Task ${options.taskId} must be claimed before it can be completed`,
+    );
+  }
+
+  if (isClaimExpired(claim)) {
+    throw new Error(
+      `Task ${options.taskId} claim expired at ${claim.leaseUntil}; reclaim the task and rerun translate verify`,
     );
   }
 
@@ -348,6 +489,12 @@ export async function completeTranslationTask(
   if (draftResultHash !== report.draftResultHash) {
     throw new Error(
       `Draft result for ${options.taskId} changed after verification; rerun translate verify`,
+    );
+  }
+
+  if (report.claimId && report.claimId !== claim.claimId) {
+    throw new Error(
+      `Verification report for ${options.taskId} does not match the current claim; rerun translate verify`,
     );
   }
 
@@ -563,8 +710,7 @@ async function buildPlannedPageTasks(
 }
 
 async function retainPendingTasks(
-  taskMappingsDir: string,
-  tasksPendingDir: string,
+  paths: ReturnType<typeof getRepoPaths>,
   sourceUrl: string,
   targetLocale: string,
   plannedPages: PlannedPageTask[],
@@ -574,7 +720,10 @@ async function retainPendingTasks(
     plannedPages.map((plannedPage) => [plannedPage.pageUrl, plannedPage]),
   );
   const retainedPageUrls = new Set<string>();
-  const files = await fg("*.json", { cwd: tasksPendingDir, absolute: true });
+  const files = await fg("*.json", {
+    cwd: paths.tasksPendingDir,
+    absolute: true,
+  });
   const invalidatedTaskIds: string[] = [];
   let retainedTaskCount = 0;
 
@@ -582,7 +731,7 @@ async function retainPendingTasks(
     try {
       const task = parseTaskFile(await readJson(filePath, {}));
       const mapping = await loadRequiredTaskMapping(
-        taskMappingsDir,
+        paths.taskMappingsDir,
         task.taskId,
       );
       const plannedPage = plannedPagesByUrl.get(task.page.url);
@@ -608,7 +757,7 @@ async function retainPendingTasks(
 
       if (!isCompatibleTask) {
         invalidatedTaskIds.push(task.taskId);
-        await removePendingTaskBundle(taskMappingsDir, filePath, task.taskId);
+        await removePendingTaskBundle(paths, filePath, task.taskId);
         logger.warn(`Removed stale pending task ${filePath}`);
         continue;
       }
@@ -620,7 +769,7 @@ async function retainPendingTasks(
       if (taskId) {
         invalidatedTaskIds.push(taskId);
       }
-      await removePendingTaskBundle(taskMappingsDir, filePath, taskId);
+      await removePendingTaskBundle(paths, filePath, taskId);
       logger.warn(
         `Removed unreadable pending task ${filePath}: ${String(error)}`,
       );
@@ -714,7 +863,11 @@ async function syncTaskManifest(
           toRepoRelativePath(repoDir, getPendingTaskPath(paths, taskId)),
         draftResultFile: previousEntry?.draftResultFile,
         doneResultFile: previousEntry?.doneResultFile,
+        claimId: previousEntry?.claimId,
         claimedAt: previousEntry?.claimedAt,
+        claimedBy: previousEntry?.claimedBy,
+        leaseUntil: previousEntry?.leaseUntil,
+        leaseExpired: previousEntry?.leaseExpired,
         completedAt: previousEntry?.completedAt,
         provider: previousEntry?.provider,
         lastVerifiedAt: previousEntry?.lastVerifiedAt,
@@ -761,15 +914,12 @@ async function buildPendingTaskManifestEntry(
   const doneResult = await loadResultFile(doneResultPath, logger);
   const hasDraft = await fs.pathExists(draftResultPath);
   const hasDoneResult = await fs.pathExists(doneResultPath);
+  const leaseExpired = claim ? isClaimExpired(claim) : false;
 
   return translationTaskManifestEntrySchema.parse({
     taskId: task.taskId,
     page: task.page,
-    status: hasDoneResult
-      ? "done"
-      : claim || hasDraft
-        ? "in-progress"
-        : "pending",
+    status: hasDoneResult ? "done" : claim ? "in-progress" : "pending",
     contentCount: task.content.length,
     taskFile: toRepoRelativePath(repoDir, taskFilePath),
     draftResultFile:
@@ -778,7 +928,11 @@ async function buildPendingTaskManifestEntry(
     doneResultFile: hasDoneResult
       ? toRepoRelativePath(repoDir, doneResultPath)
       : undefined,
+    claimId: claim?.claimId,
     claimedAt: claim?.claimedAt,
+    claimedBy: claim?.claimedBy,
+    leaseUntil: claim?.leaseUntil,
+    leaseExpired: leaseExpired || undefined,
     completedAt: doneResult?.completedAt,
     provider: doneResult?.provider,
     lastVerifiedAt: report?.checkedAt,
@@ -886,6 +1040,12 @@ function renderTaskQueueBoard(manifest: TranslationTaskManifest): string {
     const checkbox =
       task.status === "done" || task.status === "applied" ? "[x]" : "[ ]";
     const title = task.page.title ? ` | ${task.page.title}` : "";
+    const claim =
+      task.claimedBy || task.leaseUntil
+        ? ` | claim ${task.claimedBy ?? "unknown"}${
+            task.leaseUntil ? ` until ${task.leaseUntil}` : ""
+          }${task.leaseExpired ? " (expired)" : ""}`
+        : "";
     const verify =
       task.lastVerifyStatus === undefined
         ? ""
@@ -895,7 +1055,7 @@ function renderTaskQueueBoard(manifest: TranslationTaskManifest): string {
               : ""
           }`;
     lines.push(
-      `- ${checkbox} ${task.taskId} | ${task.status} | ${task.contentCount} items${title} | ${task.page.url}${verify}`,
+      `- ${checkbox} ${task.taskId} | ${task.status} | ${task.contentCount} items${title} | ${task.page.url}${claim}${verify}`,
     );
   });
 
@@ -981,6 +1141,7 @@ function validateTranslationsAgainstTask(
 ): TranslationVerificationIssue[] {
   const issues: TranslationVerificationIssue[] = [];
   const expectedIds = task.content.map((_, index) => String(index + 1));
+  const taskContentIndex = new Map(task.content.map((item) => [item.id, item]));
 
   if (mapping.items.length !== task.content.length) {
     issues.push({
@@ -1019,6 +1180,8 @@ function validateTranslationsAgainstTask(
   const mappingIndex = new Map(mapping.items.map((item) => [item.id, item]));
 
   result.translations.forEach((item, index) => {
+    const taskItem = taskContentIndex.get(item.id);
+
     if (item.translatedText.trim().length === 0) {
       issues.push({
         code: "translation_empty",
@@ -1035,6 +1198,38 @@ function validateTranslationsAgainstTask(
         jsonPath: `$.translations[${index}].id`,
       });
       return;
+    }
+
+    if (taskItem) {
+      issues.push(
+        ...validateListMarkerPrefix(
+          taskItem.text,
+          item.translatedText,
+          `$.translations[${index}].translatedText`,
+        ),
+      );
+      issues.push(
+        ...validateLightweightMarkupStructure(
+          taskItem.text,
+          item.translatedText,
+          `$.translations[${index}].translatedText`,
+        ),
+      );
+      issues.push(
+        ...validatePlaceholderTokens(
+          taskItem.text,
+          item.translatedText,
+          `$.translations[${index}].translatedText`,
+        ),
+      );
+      issues.push(
+        ...validateGlossaryTargets(
+          task.glossary,
+          taskItem.text,
+          item.translatedText,
+          `$.translations[${index}].translatedText`,
+        ),
+      );
     }
 
     if (mappedItem.kind === "segment") {
@@ -1059,7 +1254,34 @@ function validateTranslationsAgainstTask(
     }
   });
 
-  return issues;
+  return dedupeIssues(issues);
+}
+
+function collectTranslationWarnings(
+  task: TranslationTaskFile,
+  result:
+    | TranslationDraftResultFile
+    | Pick<TranslationResultFile, "taskId" | "translations">,
+): TranslationVerificationIssue[] {
+  const warnings: TranslationVerificationIssue[] = [];
+  const taskContentIndex = new Map(task.content.map((item) => [item.id, item]));
+
+  result.translations.forEach((item, index) => {
+    const taskItem = taskContentIndex.get(item.id);
+    if (!taskItem) {
+      return;
+    }
+
+    if (looksUntranslated(taskItem.text, item.translatedText)) {
+      warnings.push({
+        code: "translation_suspiciously_identical",
+        message: `Translation for id "${item.id}" is effectively identical to the source text; confirm that the text really should stay untranslated`,
+        jsonPath: `$.translations[${index}].translatedText`,
+      });
+    }
+  });
+
+  return dedupeIssues(warnings);
 }
 
 function dedupeIssues(
@@ -1138,6 +1360,219 @@ function validateOrderedIds(options: {
   }
 
   return issues;
+}
+
+function validatePlaceholderTokens(
+  sourceText: string,
+  translatedText: string,
+  jsonPath: string,
+): TranslationVerificationIssue[] {
+  const sourceTokens = extractPlaceholderTokens(sourceText);
+  if (sourceTokens.length === 0) {
+    return [];
+  }
+
+  const translatedTokens = extractPlaceholderTokens(translatedText);
+  if (areStringMultisetsEqual(sourceTokens, translatedTokens)) {
+    return [];
+  }
+
+  return [
+    {
+      code: "placeholder_mismatch",
+      message: `Translation must preserve placeholders ${JSON.stringify(
+        sourceTokens,
+      )} exactly`,
+      jsonPath,
+    },
+  ];
+}
+
+function validateListMarkerPrefix(
+  sourceText: string,
+  translatedText: string,
+  jsonPath: string,
+): TranslationVerificationIssue[] {
+  const sourceMarker = extractListMarkerPrefix(sourceText);
+  if (!sourceMarker) {
+    return [];
+  }
+
+  const translatedMarker = extractListMarkerPrefix(translatedText);
+  if (translatedMarker === sourceMarker) {
+    return [];
+  }
+
+  return [
+    {
+      code: "list_marker_mismatch",
+      message: `Translation must preserve the leading list marker "${sourceMarker}"`,
+      jsonPath,
+    },
+  ];
+}
+
+function validateLightweightMarkupStructure(
+  sourceText: string,
+  translatedText: string,
+  jsonPath: string,
+): TranslationVerificationIssue[] {
+  const sourceSignature = getLightweightMarkupSignature(sourceText);
+  const translatedSignature = getLightweightMarkupSignature(translatedText);
+  const sourceEntries = Object.entries(sourceSignature).filter(
+    ([, count]) => count > 0,
+  );
+
+  if (
+    sourceEntries.every(
+      ([key, count]) =>
+        translatedSignature[key as keyof typeof translatedSignature] === count,
+    )
+  ) {
+    return [];
+  }
+
+  const requiredFragments = sourceEntries
+    .map(([key, count]) => `${key}=${count}`)
+    .join(", ");
+  return [
+    {
+      code: "markup_structure_mismatch",
+      message: `Translation must preserve lightweight markup structure (${requiredFragments})`,
+      jsonPath,
+    },
+  ];
+}
+
+function validateGlossaryTargets(
+  glossary: TranslationTaskFile["glossary"],
+  sourceText: string,
+  translatedText: string,
+  jsonPath: string,
+): TranslationVerificationIssue[] {
+  const issues: TranslationVerificationIssue[] = [];
+
+  glossary.forEach((entry) => {
+    const sourceTerm = entry.source.trim();
+    const targetTerm = entry.target.trim();
+    if (!sourceTerm || !targetTerm) {
+      return;
+    }
+
+    if (!containsGlossaryTerm(sourceText, sourceTerm)) {
+      return;
+    }
+
+    if (containsGlossaryTerm(translatedText, targetTerm)) {
+      return;
+    }
+
+    issues.push({
+      code: "glossary_target_missing",
+      message: `Translation must include glossary target "${targetTerm}" when the source contains "${sourceTerm}"`,
+      jsonPath,
+    });
+  });
+
+  return issues;
+}
+
+function extractPlaceholderTokens(value: string): string[] {
+  PLACEHOLDER_TOKEN_REGEX.lastIndex = 0;
+  return [...value.matchAll(PLACEHOLDER_TOKEN_REGEX)].map((match) => match[0]);
+}
+
+function extractListMarkerPrefix(value: string): string | null {
+  const match = value.match(/^\s*(?:[-*+]\s+\[(?: |x|X)\]|[-*+]|\d+\.)\s+/u);
+  return match?.[0] ?? null;
+}
+
+function getLightweightMarkupSignature(value: string): Record<string, number> {
+  const comparableText = stripInlineCodeText(value);
+
+  return {
+    boldAsterisk: countMatches(comparableText, /\*\*[^*\n][\s\S]*?\*\*/gu),
+    boldUnderscore: countMatches(comparableText, /__[^_\n][\s\S]*?__/gu),
+    strike: countMatches(comparableText, /~~[^~\n][\s\S]*?~~/gu),
+    image: countMatches(comparableText, /!\[[^\]]+\]\([^)]+\)/gu),
+    link: countMatches(comparableText, /(?<!!)\[[^\]]+\]\([^)]+\)/gu),
+  };
+}
+
+function areStringMultisetsEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const counts = new Map<string, number>();
+  left.forEach((value) => {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  });
+  right.forEach((value) => {
+    const next = (counts.get(value) ?? 0) - 1;
+    if (next < 0) {
+      counts.set(value, next);
+      return;
+    }
+
+    counts.set(value, next);
+  });
+
+  return [...counts.values()].every((count) => count === 0);
+}
+
+function containsGlossaryTerm(text: string, term: string): boolean {
+  const normalizedText = normalizeText(text);
+  const normalizedTerm = normalizeText(term);
+  if (!normalizedText || !normalizedTerm) {
+    return false;
+  }
+
+  if (/^[A-Za-z0-9_-]+$/u.test(normalizedTerm)) {
+    return new RegExp(`\\b${escapeRegExp(normalizedTerm)}\\b`, "iu").test(
+      normalizedText,
+    );
+  }
+
+  return normalizedText
+    .toLocaleLowerCase()
+    .includes(normalizedTerm.toLocaleLowerCase());
+}
+
+function looksUntranslated(
+  sourceText: string,
+  translatedText: string,
+): boolean {
+  const comparableSource = stripComparableText(sourceText);
+  const comparableTranslation = stripComparableText(translatedText);
+
+  return (
+    comparableSource.length > 0 &&
+    comparableSource === comparableTranslation &&
+    /[\p{L}\p{N}]/u.test(comparableSource)
+  );
+}
+
+function stripComparableText(value: string): string {
+  return normalizeText(
+    stripInlineCodeText(value).replace(PLACEHOLDER_TOKEN_REGEX, " "),
+  )
+    .replace(/[\p{P}\p{S}]+/gu, " ")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function stripInlineCodeText(value: string): string {
+  const inlineCodeParsed = parseInlineCodeSpans(value);
+  return inlineCodeParsed ? inlineCodeParsed.textSegments.join(" ") : value;
+}
+
+function countMatches(value: string, pattern: RegExp): number {
+  return [...value.matchAll(pattern)].length;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function createIssuesFromUnknownError(
@@ -1231,6 +1666,7 @@ function applyMappedTranslation(options: {
 
     translationIndex.set(mappedItem.segment.segmentId, {
       segmentId: mappedItem.segment.segmentId,
+      reuseKey: segment.reuseKey,
       targetLocale,
       translatedText,
       sourceHash: mappedItem.segment.sourceHash,
@@ -1267,8 +1703,10 @@ function applyMappedTranslation(options: {
   }
 
   mappedItem.segments.forEach((segmentRef, index) => {
+    const currentSegment = segmentIndex.get(segmentRef.segmentId);
     translationIndex.set(segmentRef.segmentId, {
       segmentId: segmentRef.segmentId,
+      reuseKey: currentSegment?.reuseKey,
       targetLocale,
       translatedText: translatedSegments[index] ?? "",
       sourceHash: segmentRef.sourceHash,
@@ -1457,13 +1895,15 @@ function createEmptyTaskManifest(
 async function loadClaimFile(
   filePath: string,
   logger: Logger,
-): Promise<TranslationTaskClaimFile | null> {
+): Promise<NormalizedTaskClaimFile | null> {
   if (!(await fs.pathExists(filePath))) {
     return null;
   }
 
   try {
-    return translationTaskClaimFileSchema.parse(await readJson(filePath, {}));
+    return normalizeClaimFile(
+      translationTaskClaimFileSchema.parse(await readJson(filePath, {})),
+    );
   } catch (error) {
     logger.warn(`Ignoring unreadable claim file ${filePath}: ${String(error)}`);
     return null;
@@ -1508,14 +1948,168 @@ async function loadResultFile(
   }
 }
 
+async function reclaimExpiredTaskClaims(
+  paths: ReturnType<typeof getRepoPaths>,
+  logger: Logger,
+  options: {
+    dropDraft?: boolean;
+  } = {},
+): Promise<{
+  taskIds: string[];
+  removedDraftCount: number;
+}> {
+  const claimFiles = await fg("*.claim.json", {
+    cwd: paths.tasksInProgressDir,
+    absolute: true,
+  });
+  const taskIds: string[] = [];
+  let removedDraftCount = 0;
+
+  for (const claimPath of claimFiles.sort()) {
+    const claim = await loadClaimFile(claimPath, logger);
+    if (!claim || !isClaimExpired(claim)) {
+      continue;
+    }
+
+    await fs.remove(claimPath);
+    await fs.remove(getVerificationReportPath(paths, claim.taskId));
+    if (options.dropDraft) {
+      await fs.remove(getDraftResultPath(paths, claim.taskId));
+      removedDraftCount += 1;
+    }
+    taskIds.push(claim.taskId);
+  }
+
+  return {
+    taskIds,
+    removedDraftCount,
+  };
+}
+
+function normalizeClaimFile(
+  claim: TranslationTaskClaimFile,
+): NormalizedTaskClaimFile {
+  return {
+    ...claim,
+    schemaVersion: 2,
+    claimId: claim.claimId ?? claim.taskId,
+    claimedBy: claim.claimedBy ?? "unknown",
+    leaseUntil: claim.leaseUntil ?? claim.claimedAt,
+  };
+}
+
+function isClaimExpired(
+  claim: Pick<NormalizedTaskClaimFile, "leaseUntil">,
+  now = new Date(),
+): boolean {
+  return new Date(claim.leaseUntil).getTime() <= now.getTime();
+}
+
+function normalizeLeaseMinutes(leaseMinutes?: number): number {
+  if (
+    typeof leaseMinutes !== "number" ||
+    !Number.isFinite(leaseMinutes) ||
+    leaseMinutes <= 0
+  ) {
+    return DEFAULT_TASK_LEASE_MINUTES;
+  }
+
+  return Math.floor(leaseMinutes);
+}
+
+async function tryClaimTask(
+  repoDir: string,
+  paths: ReturnType<typeof getRepoPaths>,
+  options: {
+    taskId: string;
+    workerId: string;
+    leaseMinutes: number;
+  },
+): Promise<ClaimSummary | null> {
+  const taskPath = getPendingTaskPath(paths, options.taskId);
+  const claimPath = getTaskClaimPath(paths, options.taskId);
+  const doneResultPath = getDoneResultPath(paths, options.taskId);
+  if (
+    !(await fs.pathExists(taskPath)) ||
+    (await fs.pathExists(doneResultPath))
+  ) {
+    return null;
+  }
+
+  const task = parseTaskFile(await readJson(taskPath, {}));
+  const claimedAt = createTimestamp();
+  const leaseUntil = new Date(
+    Date.now() + options.leaseMinutes * 60_000,
+  ).toISOString();
+  const draftResultPath = getDraftResultPath(paths, options.taskId);
+  const taskFile = toRepoRelativePath(repoDir, taskPath);
+  const draftResultFile = toRepoRelativePath(repoDir, draftResultPath);
+  const claim = normalizeClaimFile(
+    translationTaskClaimFileSchema.parse({
+      schemaVersion: 2,
+      taskId: options.taskId,
+      claimedAt,
+      taskFile,
+      draftResultFile,
+      claimId: `claim_${nanoid(10)}`,
+      claimedBy: options.workerId,
+      leaseUntil,
+    }),
+  );
+
+  let handle;
+  try {
+    handle = await open(claimPath, "wx");
+    await handle.writeFile(`${JSON.stringify(claim, null, 2)}\n`, "utf8");
+  } catch (error) {
+    await handle?.close();
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "EEXIST"
+    ) {
+      return null;
+    }
+
+    await fs.remove(claimPath);
+    throw error;
+  }
+  await handle.close();
+
+  if (!(await fs.pathExists(draftResultPath))) {
+    await writeJson(draftResultPath, {
+      schemaVersion: 2,
+      taskId: options.taskId,
+      translations: task.content.map((item) => ({
+        id: item.id,
+        translatedText: "",
+      })),
+    });
+  }
+
+  await fs.remove(getVerificationReportPath(paths, options.taskId));
+  return {
+    taskId: options.taskId,
+    taskFile,
+    draftResultFile,
+    claimedBy: claim.claimedBy,
+    leaseUntil: claim.leaseUntil,
+  };
+}
+
 async function removePendingTaskBundle(
-  taskMappingsDir: string,
+  paths: ReturnType<typeof getRepoPaths>,
   taskFilePath: string,
   taskId: string,
 ): Promise<void> {
   await fs.remove(taskFilePath);
   if (taskId) {
-    await fs.remove(getTaskMappingPath(taskMappingsDir, taskId));
+    await fs.remove(getTaskMappingPath(paths.taskMappingsDir, taskId));
+    await fs.remove(getTaskClaimPath(paths, taskId));
+    await fs.remove(getDraftResultPath(paths, taskId));
+    await fs.remove(getDoneResultPath(paths, taskId));
+    await fs.remove(getVerificationReportPath(paths, taskId));
   }
 }
 

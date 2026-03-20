@@ -61,6 +61,8 @@ export type ClaimSummary = {
   taskId: string;
   taskFile: string;
   draftResultFile: string;
+  claimedBy: string;
+  leaseUntil: string;
 };
 
 export type VerifySummary = {
@@ -76,6 +78,18 @@ export type VerifySummary = {
 export type CompleteSummary = {
   taskId: string;
   resultFile: string;
+};
+
+export type ReleaseSummary = {
+  taskId: string;
+  removedDraft: boolean;
+  wasExpired: boolean;
+};
+
+export type ReclaimExpiredSummary = {
+  reclaimedTaskCount: number;
+  taskIds: string[];
+  removedDraftCount: number;
 };
 
 export type DoctorSummary = {
@@ -97,5 +111,9 @@ export type MirrorStatus = {
   acceptedTranslationCount: number;
   staleTranslationCount: number;
   pendingTaskCount: number;
+  inProgressTaskCount: number;
   doneTaskCount: number;
+  appliedTaskCount: number;
+  invalidTaskCount: number;
+  expiredLeaseTaskCount: number;
 };

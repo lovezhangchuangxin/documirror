@@ -1,5 +1,10 @@
 import type { SegmentRecord } from "@documirror/shared";
-import { createSegmentId, hashString, normalizeText } from "@documirror/shared";
+import {
+  createSegmentId,
+  createSegmentReuseKey,
+  hashString,
+  normalizeText,
+} from "@documirror/shared";
 
 export function createTextSegment(
   pageUrl: string,
@@ -15,6 +20,13 @@ export function createTextSegment(
 
   return {
     segmentId: createSegmentId(pageUrl, domPath, "text"),
+    reuseKey: createSegmentReuseKey({
+      pageUrl,
+      kind: "text",
+      normalizedText,
+      tagName: parentTag,
+      pageTitle,
+    }),
     pageUrl,
     domPath,
     kind: "text",
@@ -43,6 +55,14 @@ export function createAttributeSegment(
 
   return {
     segmentId: createSegmentId(pageUrl, domPath, "attr", attributeName),
+    reuseKey: createSegmentReuseKey({
+      pageUrl,
+      kind: "attr",
+      attributeName,
+      normalizedText,
+      tagName,
+      pageTitle,
+    }),
     pageUrl,
     domPath,
     kind: "attr",
@@ -71,6 +91,14 @@ export function createMetaSegment(
 
   return {
     segmentId: createSegmentId(pageUrl, domPath, "meta", "content"),
+    reuseKey: createSegmentReuseKey({
+      pageUrl,
+      kind: "meta",
+      attributeName: "content",
+      normalizedText,
+      tagName,
+      pageTitle,
+    }),
     pageUrl,
     domPath,
     kind: "meta",

@@ -55,7 +55,14 @@ pnpm documirror:translate:plan
 Claim the next translation task:
 
 \`\`\`bash
-pnpm documirror:translate:claim
+pnpm documirror:translate:claim -- --worker <agent-name>
+\`\`\`
+
+Release a claimed task or reclaim expired leases:
+
+\`\`\`bash
+pnpm documirror:translate:release -- --task <taskId>
+pnpm documirror:translate:reclaim-expired
 \`\`\`
 
 Verify and complete a claimed task:
@@ -88,13 +95,14 @@ pnpm documirror:doctor
 
 1. Run \`pnpm documirror:update\`
 2. Check \`.documirror/tasks/QUEUE.md\`
-3. Claim the next task with \`pnpm documirror:translate:claim\`
+3. Claim the next task with \`pnpm documirror:translate:claim -- --worker <agent-name>\`
 4. Translate into \`.documirror/tasks/in-progress/<taskId>.result.json\`
 5. Run \`pnpm documirror:translate:verify -- --task <taskId>\`
 6. Fix every reported error until verification passes
 7. Run \`pnpm documirror:translate:complete -- --task <taskId> --provider <agent-name>\`
-8. After all tasks are complete, run \`pnpm documirror:translate:apply\`
-9. Run \`pnpm documirror:build\`
+8. If a worker stops, run \`pnpm documirror:translate:release -- --task <taskId>\` or \`pnpm documirror:translate:reclaim-expired\`
+9. After all tasks are complete, run \`pnpm documirror:translate:apply\`
+10. Run \`pnpm documirror:build\`
 
 For the detailed agent operating rules, see \`.documirror/TASKS.md\`.
 `;

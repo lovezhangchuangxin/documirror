@@ -19,7 +19,7 @@ DocuMirror 面向这样一类需求：
 
 当前仓库已经提供可运行的 v0.1 基础能力：
 
-- 提供 `init`、`crawl`、`extract`、`translate plan`、`translate claim`、`translate verify`、`translate complete`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
+- 提供 `init`、`crawl`、`extract`、`translate plan`、`translate claim`、`translate release`、`translate reclaim-expired`、`translate verify`、`translate complete`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
 - 使用 `pnpm workspace` 组织 crawler、parser、i18n、builder、CLI 等独立包
 - 基于 `sourceHash` 的 segment 级增量翻译规划
 - 面向外部 agent 的按页面任务装配与短序号内容项
@@ -55,7 +55,7 @@ DocuMirror 面向这样一类需求：
    解析 HTML，生成可翻译 segment 和 DOM 装配映射。
 4. `translate plan`
    仅为新增、过期或缺失翻译的内容导出任务 JSON，并刷新任务清单与看板。
-5. `translate claim` / `translate verify` / `translate complete`
+5. `translate claim` / `translate release` / `translate reclaim-expired` / `translate verify` / `translate complete`
    按任务领取、填写草稿结果、执行校验，并把通过校验的结果放入 done 队列。
 6. `translate apply`
    校验并导入可接受的翻译结果。
@@ -183,7 +183,16 @@ node packages/cli/dist/index.mjs translate plan --repo ./my-mirror
 领取下一个翻译任务：
 
 ```bash
-node packages/cli/dist/index.mjs translate claim --repo ./my-mirror
+node packages/cli/dist/index.mjs translate claim --repo ./my-mirror --worker codex-01
+```
+
+`claim` 在选择下一个任务前，会自动回收已经过期的 lease。
+
+释放或回收任务：
+
+```bash
+node packages/cli/dist/index.mjs translate release --repo ./my-mirror --task <taskId>
+node packages/cli/dist/index.mjs translate reclaim-expired --repo ./my-mirror
 ```
 
 校验并完成一个已领取任务：
@@ -257,13 +266,14 @@ crawler 相关设置位于 `.documirror/config.json`。
 
 推荐的 agent 流程：
 
-1. 执行 `translate claim`
+1. 执行 `translate claim --worker <agent-name>`
 2. 读取 `.documirror/tasks/pending/` 下的任务 JSON
 3. 在 `.documirror/tasks/in-progress/` 下填写草稿结果
 4. 执行 `translate verify`
 5. 根据错误提示修正，直到校验通过
 6. 执行 `translate complete`
-7. 全部任务完成后执行 `translate apply`
+7. 如果 worker 中断，执行 `translate release` 或 `translate reclaim-expired`
+8. 全部任务完成后执行 `translate apply`
 
 每个任务 JSON 包含：
 
@@ -295,11 +305,18 @@ crawler 相关设置位于 `.documirror/config.json`。
 
 `translate verify` 会检查：
 
+- 当前任务 lease 是否已经过期
 - `translations.length === content.length`
 - `translations[].id` 是否严格按 `1..N`
 - 是否缺失、重复或出现多余 id
 - 是否存在空的 `translatedText`
+- `1.`、`-`、`- [ ]` 这类前导列表标记是否被保留
+- 当命中 glossary 词条时，译文是否包含对应 target
+- `{name}`、`{{value}}`、`%s`、`<0>` 这类 placeholder 是否被原样保留
+- `**bold**`、`~~strike~~`、`[text](url)` 这类轻量 markdown 结构是否被保留
 - inline code 是否按顺序保留
+
+如果译文与原文几乎完全一致，`verify` 还会给出 warning，提示人工确认。
 
 `translate complete` 会写出正式结果文件，包含：
 
@@ -316,9 +333,11 @@ crawler 相关设置位于 `.documirror/config.json`。
 增量更新是按 segment，而不是按页面进行的：
 
 - 每个抽取出的 segment 都有稳定的 `segmentId`
+- 每个 segment 还会生成一个页面内的 `reuseKey`，用于在 DOM 路径变化时安全复用既有翻译
 - 每段归一化后的源文本都会生成 `sourceHash`
 - 当 `sourceHash` 变化时，旧翻译会变为 stale
 - 下一次翻译规划只会导出新增、过期或缺失已接受翻译的 segment
+- 如果 segment 只是同页内位置变化，但 `reuseKey` 唯一且 `sourceHash` 未变，DocuMirror 会自动继承已接受译文
 - 对应当前内容的 `.documirror/tasks/pending/` 兼容页面任务会在重复规划时保留
 
 这样当源站只改动少量内容时，翻译成本不会膨胀到整页级别。

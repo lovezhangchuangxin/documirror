@@ -21,6 +21,9 @@ export function createMirrorRepoPackageJson(
       "documirror:extract": "documirror extract --repo .",
       "documirror:translate:plan": "documirror translate plan --repo .",
       "documirror:translate:claim": "documirror translate claim --repo .",
+      "documirror:translate:release": "documirror translate release --repo .",
+      "documirror:translate:reclaim-expired":
+        "documirror translate reclaim-expired --repo .",
       "documirror:translate:verify": "documirror translate verify --repo .",
       "documirror:translate:complete": "documirror translate complete --repo .",
       "documirror:translate:apply": "documirror translate apply --repo .",

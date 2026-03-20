@@ -10,8 +10,11 @@ import {
   claimTranslationTask,
   completeTranslationTask,
   extractMirror,
+  getMirrorStatus,
   initMirrorRepository,
   planTranslations,
+  reclaimExpiredTranslationTasks,
+  releaseTranslationTask,
   verifyTranslationTask,
 } from "@documirror/core";
 
@@ -213,6 +216,7 @@ describe("documirror core pipeline", () => {
     expect(claimSummary.draftResultFile).toBe(
       `.documirror/tasks/in-progress/${task.taskId}.result.json`,
     );
+    expect(claimSummary.claimedBy).toBe("unknown");
     await writeFile(
       join(
         repoDir,
@@ -362,6 +366,12 @@ describe("documirror core pipeline", () => {
     );
     expect(mirrorPackage.scripts["documirror:translate:claim"]).toBe(
       "documirror translate claim --repo .",
+    );
+    expect(mirrorPackage.scripts["documirror:translate:release"]).toBe(
+      "documirror translate release --repo .",
+    );
+    expect(mirrorPackage.scripts["documirror:translate:reclaim-expired"]).toBe(
+      "documirror translate reclaim-expired --repo .",
     );
     expect(mirrorPackage.scripts["documirror:translate:verify"]).toBe(
       "documirror translate verify --repo .",
@@ -585,6 +595,285 @@ describe("documirror core pipeline", () => {
     expect(
       await readFile(join(repoDir, ".documirror", "tasks", "QUEUE.md"), "utf8"),
     ).toContain("verify fail");
+  });
+
+  it("rejects translations that drop glossary targets or placeholders", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    await writeFile(
+      join(repoDir, ".documirror", "glossary.json"),
+      JSON.stringify(
+        [
+          {
+            source: "mirror",
+            target: "镜像",
+          },
+        ],
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "cache", "pages", "index.html"),
+      `<!doctype html><html><head><title>Docs</title></head><body><main><p>Build mirror for {file}</p></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+    const claimSummary = await claimTranslationTask(repoDir);
+
+    await writeFile(
+      join(
+        repoDir,
+        ".documirror",
+        "tasks",
+        "in-progress",
+        `${claimSummary.taskId}.result.json`,
+      ),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: claimSummary.taskId,
+          translations: [
+            {
+              id: "1",
+              translatedText: "构建文档站点",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const verifySummary = await verifyTranslationTask(
+      repoDir,
+      claimSummary.taskId,
+    );
+    expect(verifySummary.ok).toBe(false);
+    expect(verifySummary.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "glossary_target_missing",
+        }),
+        expect.objectContaining({
+          code: "placeholder_mismatch",
+        }),
+      ]),
+    );
+  });
+
+  it("emits warnings when a translation is effectively identical to the source", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    await writeFile(
+      join(repoDir, ".documirror", "cache", "pages", "index.html"),
+      `<!doctype html><html><head><title>Docs</title></head><body><main><h1>Hello world</h1></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+    const claimSummary = await claimTranslationTask(repoDir);
+
+    await writeFile(
+      join(
+        repoDir,
+        ".documirror",
+        "tasks",
+        "in-progress",
+        `${claimSummary.taskId}.result.json`,
+      ),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: claimSummary.taskId,
+          translations: [
+            {
+              id: "1",
+              translatedText: "Hello world",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const verifySummary = await verifyTranslationTask(
+      repoDir,
+      claimSummary.taskId,
+    );
+    expect(verifySummary.ok).toBe(true);
+    expect(verifySummary.warningCount).toBe(1);
+    expect(verifySummary.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "translation_suspiciously_identical",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects translations that alter list markers or lightweight markdown structure", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    await writeFile(
+      join(repoDir, ".documirror", "cache", "pages", "index.html"),
+      `<!doctype html><html><head><title>Docs</title></head><body><main><p>1. Enable **strict mode** for [docs](https://example.com)</p></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+    const claimSummary = await claimTranslationTask(repoDir);
+
+    await writeFile(
+      join(
+        repoDir,
+        ".documirror",
+        "tasks",
+        "in-progress",
+        `${claimSummary.taskId}.result.json`,
+      ),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: claimSummary.taskId,
+          translations: [
+            {
+              id: "1",
+              translatedText: "启用 strict mode 并查看 docs",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const verifySummary = await verifyTranslationTask(
+      repoDir,
+      claimSummary.taskId,
+    );
+    expect(verifySummary.ok).toBe(false);
+    expect(verifySummary.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "list_marker_mismatch",
+        }),
+        expect.objectContaining({
+          code: "markup_structure_mismatch",
+        }),
+      ]),
+    );
   });
 
   it("rejects stale claimed tasks during verification", async () => {
@@ -1153,5 +1442,455 @@ describe("documirror core pipeline", () => {
     expect(await readFile(firstTaskMappingPath, "utf8")).toBe(
       firstTaskMappingBody,
     );
+  });
+
+  it("reuses accepted translations when DOM paths shift but page-local content stays unique", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><main><p>Hello world</p></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const taskDir = join(repoDir, ".documirror", "tasks", "pending");
+    const [taskFileName] = await readdir(taskDir);
+    const task = JSON.parse(
+      await readFile(join(taskDir, taskFileName), "utf8"),
+    ) as {
+      taskId: string;
+      content: Array<{
+        id: string;
+      }>;
+    };
+
+    await writeFile(
+      join(repoDir, ".documirror", "tasks", "done", `${task.taskId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: task.taskId,
+          provider: "test-provider",
+          completedAt: new Date().toISOString(),
+          translations: task.content.map((item) => ({
+            id: item.id,
+            translatedText: "你好世界",
+          })),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await applyTranslations(repoDir);
+
+    const initialSegments = (
+      await readFile(
+        join(repoDir, ".documirror", "content", "segments.jsonl"),
+        "utf8",
+      )
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)) as Array<{
+      segmentId: string;
+      sourceText: string;
+    }>;
+    const initialHelloSegment = initialSegments.find(
+      (segment) => segment.sourceText === "Hello world",
+    );
+    expect(initialHelloSegment).toBeDefined();
+
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><main><div></div><p>Hello world</p></main></body></html>`,
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    const secondPlan = await planTranslations(repoDir);
+    expect(secondPlan.segmentCount).toBe(0);
+    expect(secondPlan.taskCount).toBe(0);
+
+    const currentSegments = (
+      await readFile(
+        join(repoDir, ".documirror", "content", "segments.jsonl"),
+        "utf8",
+      )
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)) as Array<{
+      segmentId: string;
+      sourceText: string;
+    }>;
+    const currentHelloSegment = currentSegments.find(
+      (segment) => segment.sourceText === "Hello world",
+    );
+    expect(currentHelloSegment).toBeDefined();
+    expect(currentHelloSegment?.segmentId).not.toBe(
+      initialHelloSegment?.segmentId,
+    );
+
+    const translations = (
+      await readFile(
+        join(repoDir, ".documirror", "content", "translations.jsonl"),
+        "utf8",
+      )
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)) as Array<{
+      segmentId: string;
+      status: string;
+      translatedText: string;
+    }>;
+    expect(translations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          segmentId: currentHelloSegment?.segmentId,
+          status: "accepted",
+          translatedText: "你好世界",
+        }),
+        expect.objectContaining({
+          segmentId: initialHelloSegment?.segmentId,
+          status: "stale",
+        }),
+      ]),
+    );
+  });
+
+  it("releases claimed tasks back to pending without dropping drafts by default", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    await writeFile(
+      join(repoDir, ".documirror", "cache", "pages", "index.html"),
+      `<!doctype html><html><head><title>Docs</title></head><body><main><h1>Hello world</h1></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const claimSummary = await claimTranslationTask(repoDir, {
+      workerId: "codex-01",
+      leaseMinutes: 30,
+    });
+    expect(claimSummary.claimedBy).toBe("codex-01");
+
+    const draftPath = join(
+      repoDir,
+      ".documirror",
+      "tasks",
+      "in-progress",
+      `${claimSummary.taskId}.result.json`,
+    );
+    await writeFile(
+      draftPath,
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: claimSummary.taskId,
+          translations: [
+            {
+              id: "1",
+              translatedText: "你好世界",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const releaseSummary = await releaseTranslationTask(repoDir, {
+      taskId: claimSummary.taskId,
+    });
+    expect(releaseSummary.removedDraft).toBe(false);
+
+    const queueManifest = JSON.parse(
+      await readFile(
+        join(repoDir, ".documirror", "tasks", "manifest.json"),
+        "utf8",
+      ),
+    ) as {
+      tasks: Array<{
+        taskId: string;
+        status: string;
+        claimedBy?: string;
+        draftResultFile?: string;
+      }>;
+    };
+    expect(queueManifest.tasks).toContainEqual(
+      expect.objectContaining({
+        taskId: claimSummary.taskId,
+        status: "pending",
+        draftResultFile: `.documirror/tasks/in-progress/${claimSummary.taskId}.result.json`,
+      }),
+    );
+    expect(await readFile(draftPath, "utf8")).toContain('"taskId"');
+
+    const status = await getMirrorStatus(repoDir);
+    expect(status.pendingTaskCount).toBe(1);
+    expect(status.inProgressTaskCount).toBe(0);
+  });
+
+  it("reclaims expired task leases and clears them from status", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    await writeFile(
+      join(repoDir, ".documirror", "cache", "pages", "index.html"),
+      `<!doctype html><html><head><title>Docs</title></head><body><main><h1>Hello world</h1></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const claimSummary = await claimTranslationTask(repoDir, {
+      workerId: "codex-02",
+      leaseMinutes: 30,
+    });
+    const claimPath = join(
+      repoDir,
+      ".documirror",
+      "tasks",
+      "in-progress",
+      `${claimSummary.taskId}.claim.json`,
+    );
+    const expiredClaim = JSON.parse(await readFile(claimPath, "utf8")) as {
+      schemaVersion: number;
+      taskId: string;
+      claimedAt: string;
+      taskFile: string;
+      draftResultFile: string;
+      claimId: string;
+      claimedBy: string;
+      leaseUntil: string;
+    };
+    expiredClaim.leaseUntil = new Date(Date.now() - 60_000).toISOString();
+    await writeFile(
+      claimPath,
+      `${JSON.stringify(expiredClaim, null, 2)}\n`,
+      "utf8",
+    );
+
+    const expiredStatus = await getMirrorStatus(repoDir);
+    expect(expiredStatus.inProgressTaskCount).toBe(1);
+    expect(expiredStatus.expiredLeaseTaskCount).toBe(1);
+
+    const reclaimSummary = await reclaimExpiredTranslationTasks(repoDir);
+    expect(reclaimSummary).toEqual({
+      reclaimedTaskCount: 1,
+      taskIds: [claimSummary.taskId],
+      removedDraftCount: 0,
+    });
+
+    const status = await getMirrorStatus(repoDir);
+    expect(status.pendingTaskCount).toBe(1);
+    expect(status.inProgressTaskCount).toBe(0);
+    expect(status.expiredLeaseTaskCount).toBe(0);
+  });
+
+  it("auto-reclaims expired claims before selecting the next task", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    await writeFile(
+      join(repoDir, ".documirror", "cache", "pages", "index.html"),
+      `<!doctype html><html><head><title>Docs</title></head><body><main><h1>Hello world</h1></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const firstClaim = await claimTranslationTask(repoDir, {
+      workerId: "codex-01",
+      leaseMinutes: 30,
+    });
+    const claimPath = join(
+      repoDir,
+      ".documirror",
+      "tasks",
+      "in-progress",
+      `${firstClaim.taskId}.claim.json`,
+    );
+    const expiredClaim = JSON.parse(await readFile(claimPath, "utf8")) as {
+      schemaVersion: number;
+      taskId: string;
+      claimedAt: string;
+      taskFile: string;
+      draftResultFile: string;
+      claimId: string;
+      claimedBy: string;
+      leaseUntil: string;
+    };
+    expiredClaim.leaseUntil = new Date(Date.now() - 60_000).toISOString();
+    await writeFile(
+      claimPath,
+      `${JSON.stringify(expiredClaim, null, 2)}\n`,
+      "utf8",
+    );
+
+    const secondClaim = await claimTranslationTask(repoDir, {
+      workerId: "codex-02",
+    });
+    expect(secondClaim.taskId).toBe(firstClaim.taskId);
+    expect(secondClaim.claimedBy).toBe("codex-02");
+
+    const status = await getMirrorStatus(repoDir);
+    expect(status.pendingTaskCount).toBe(0);
+    expect(status.inProgressTaskCount).toBe(1);
+    expect(status.expiredLeaseTaskCount).toBe(0);
   });
 });

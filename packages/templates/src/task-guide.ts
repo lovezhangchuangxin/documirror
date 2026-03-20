@@ -14,8 +14,10 @@ This document is the operating guide for external agents that translate DocuMirr
 1. Claim the next task:
 
 \`\`\`bash
-documirror translate claim --repo .
+documirror translate claim --repo . --worker <agent-name>
 \`\`\`
+
+Expired task leases are reclaimed automatically before claim selects the next task.
 
 If you need a specific task:
 
@@ -42,6 +44,13 @@ documirror translate complete --repo . --task <taskId> --provider <agent-name>
 
 \`\`\`bash
 documirror translate apply --repo .
+\`\`\`
+
+If an agent stops or a lease expires, return the task to the queue:
+
+\`\`\`bash
+documirror translate release --repo . --task <taskId>
+documirror translate reclaim-expired --repo .
 \`\`\`
 
 ## Translation Rules (MUST Follow)
@@ -71,6 +80,11 @@ documirror translate apply --repo .
 - Preserve markdown emphasis and links
 - Preserve placeholders and HTML entities
 
+### 6. Queue Discipline
+- Do not edit \`.documirror/tasks/manifest.json\` or \`.documirror/tasks/QUEUE.md\`
+- One task lease belongs to one worker
+- Release or reclaim stuck tasks instead of leaving them in progress
+
 ## Draft Result Schema
 
 \`\`\`json
@@ -99,7 +113,14 @@ The \`complete\` command will fill \`provider\` and \`completedAt\` into the fin
 - \`translations[].id\` is strictly \`1..N\`
 - no missing, duplicate, or extra ids
 - no empty \`translatedText\`
+- leading list markers such as \`1.\`, \`-\`, and \`- [ ]\` are preserved
+- glossary targets are present when matching source terms appear
+- placeholders such as \`{name}\`, \`{{value}}\`, \`%s\`, and \`<0>\` are preserved exactly
+- lightweight markdown structures such as \`**bold**\`, \`~~strike~~\`, and \`[text](url)\` are preserved
 - inline code spans are preserved for inline-code tasks
+- expired task claims fail verification until the task is reclaimed
+
+Verify may also warn when a translation is effectively identical to the source text.
 
 ## Example Fixes
 

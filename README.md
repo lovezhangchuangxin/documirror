@@ -19,7 +19,7 @@ DocuMirror is built for documentation teams that need both:
 
 The current repository already provides a working v0.1 foundation with:
 
-- CLI commands for `init`, `crawl`, `extract`, `translate plan`, `translate claim`, `translate verify`, `translate complete`, `translate apply`, `build`, `update`, `doctor`, and `status`
+- CLI commands for `init`, `crawl`, `extract`, `translate plan`, `translate claim`, `translate release`, `translate reclaim-expired`, `translate verify`, `translate complete`, `translate apply`, `build`, `update`, `doctor`, and `status`
 - a `pnpm` workspace split into crawler, parser, i18n, builder, and CLI packages
 - segment-level incremental translation planning based on `sourceHash`
 - page-based translation task packs with short item ids for external agents
@@ -55,7 +55,7 @@ The end-to-end workflow is:
    Parse HTML into translatable segments plus DOM assembly mappings.
 4. `translate plan`
    Export task JSON files only for new, stale, or missing translations, and refresh the task queue manifest/checklist.
-5. `translate claim` / `translate verify` / `translate complete`
+5. `translate claim` / `translate release` / `translate reclaim-expired` / `translate verify` / `translate complete`
    Claim one task at a time, write a draft result, validate it, then finalize it into the done queue.
 6. `translate apply`
    Validate and import accepted translation results into the translation store.
@@ -183,7 +183,16 @@ node packages/cli/dist/index.mjs translate plan --repo ./my-mirror
 Claim the next translation task:
 
 ```bash
-node packages/cli/dist/index.mjs translate claim --repo ./my-mirror
+node packages/cli/dist/index.mjs translate claim --repo ./my-mirror --worker codex-01
+```
+
+Expired task leases are reclaimed automatically before `claim` selects the next task.
+
+Release or reclaim translation tasks:
+
+```bash
+node packages/cli/dist/index.mjs translate release --repo ./my-mirror --task <taskId>
+node packages/cli/dist/index.mjs translate reclaim-expired --repo ./my-mirror
 ```
 
 Verify and complete a claimed task:
@@ -257,13 +266,14 @@ Queue state is also written to:
 
 Recommended agent workflow:
 
-1. Run `translate claim`
+1. Run `translate claim --worker <agent-name>`
 2. Read the task JSON under `.documirror/tasks/pending/`
 3. Fill the draft result scaffold under `.documirror/tasks/in-progress/`
 4. Run `translate verify`
 5. Fix every reported issue until verification passes
 6. Run `translate complete`
-7. Run `translate apply` after all queued tasks are complete
+7. If a worker stops, run `translate release` or `translate reclaim-expired`
+8. Run `translate apply` after all queued tasks are complete
 
 Each task JSON includes:
 
@@ -295,11 +305,18 @@ Draft result files must include:
 
 `translate verify` checks:
 
+- the current task claim has not expired
 - `translations.length === content.length`
 - `translations[].id` is strictly `1..N`
 - no missing, duplicate, or extra ids
 - no empty `translatedText`
+- leading list markers such as `1.`, `-`, and `- [ ]` are preserved
+- glossary targets are present when matching source terms appear
+- placeholders such as `{name}`, `{{value}}`, `%s`, and `<0>` are preserved exactly
+- lightweight markdown structures such as `**bold**`, `~~strike~~`, and `[text](url)` are preserved
 - inline code spans are preserved in order
+
+It also emits warnings when a translation is effectively identical to the source text.
 
 `translate complete` writes final result files with:
 
@@ -316,9 +333,11 @@ When a task item contains inline code such as `` `snap-always` ``, result text m
 Incremental behavior is segment-based, not page-based:
 
 - every extracted segment gets a stable `segmentId`
+- every extracted segment also gets a page-local `reuseKey` for safe translation carry-forward when DOM paths shift
 - every normalized source text gets a `sourceHash`
 - when the source hash changes, the previous translation becomes stale
 - only new, stale, or missing accepted translations are exported in the next translation plan
+- when a segment moves on the same page but keeps a unique `reuseKey` and unchanged `sourceHash`, DocuMirror can carry the accepted translation forward automatically
 - compatible pending page task files already present under `.documirror/tasks/pending/` are retained across repeated planning runs
 
 This keeps translation cost low when only a small portion of the source site changes.

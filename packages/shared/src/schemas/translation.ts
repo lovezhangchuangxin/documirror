@@ -4,6 +4,7 @@ export const translationStatusSchema = z.enum(["draft", "accepted", "stale"]);
 
 export const translationRecordSchema = z.object({
   segmentId: z.string(),
+  reuseKey: z.string().optional(),
   targetLocale: z.string(),
   translatedText: z.string(),
   sourceHash: z.string(),
@@ -125,11 +126,14 @@ export const translationTaskStatusSchema = z.enum([
 export type TranslationTaskStatus = z.infer<typeof translationTaskStatusSchema>;
 
 export const translationTaskClaimFileSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.number().int().min(1).max(2),
   taskId: z.string(),
   claimedAt: z.string(),
   taskFile: z.string(),
   draftResultFile: z.string(),
+  claimId: z.string().optional(),
+  claimedBy: z.string().optional(),
+  leaseUntil: z.string().optional(),
 });
 
 export type TranslationTaskClaimFile = z.infer<
@@ -152,6 +156,8 @@ export const translationVerificationReportSchema = z.object({
   checkedAt: z.string(),
   draftResultFile: z.string(),
   draftResultHash: z.string(),
+  claimId: z.string().optional(),
+  claimedBy: z.string().optional(),
   ok: z.boolean(),
   errorCount: z.number().int().nonnegative(),
   warningCount: z.number().int().nonnegative(),
@@ -174,7 +180,11 @@ export const translationTaskManifestEntrySchema = z.object({
   taskFile: z.string(),
   draftResultFile: z.string().optional(),
   doneResultFile: z.string().optional(),
+  claimId: z.string().optional(),
   claimedAt: z.string().optional(),
+  claimedBy: z.string().optional(),
+  leaseUntil: z.string().optional(),
+  leaseExpired: z.boolean().optional(),
   completedAt: z.string().optional(),
   provider: z.string().optional(),
   lastVerifiedAt: z.string().optional(),

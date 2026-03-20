@@ -13,6 +13,8 @@ import {
   getMirrorStatus,
   initMirrorRepository,
   planTranslations,
+  reclaimExpiredTranslationTasks,
+  releaseTranslationTask,
   verifyTranslationTask,
   updateMirror,
 } from "@documirror/core";
@@ -112,12 +114,27 @@ translate
   .command("claim")
   .option("--repo <dir>", "mirror repository directory", process.cwd())
   .option("--task <taskId>", "specific task id to claim")
+  .option(
+    "--worker <workerId>",
+    "worker id recorded in the task lease",
+    process.env.DOCUMIRROR_WORKER_ID ?? process.env.USER ?? "agent",
+  )
+  .option(
+    "--lease-minutes <minutes>",
+    "claim lease duration in minutes",
+    (value) => value,
+  )
   .action(async (options) => {
     await runWithSpinner("Claiming translation task", async ({ logger }) => {
       const summary = await claimTranslationTask(
         options.repo,
         {
           taskId: options.task,
+          workerId: options.worker,
+          leaseMinutes:
+            options.leaseMinutes === undefined
+              ? undefined
+              : Number.parseInt(String(options.leaseMinutes), 10),
         },
         logger,
       );
@@ -126,7 +143,60 @@ translate
         details: [
           `task file: ${summary.taskFile}`,
           `draft result: ${summary.draftResultFile}`,
+          `worker: ${summary.claimedBy}`,
+          `lease until: ${summary.leaseUntil}`,
           `next: documirror translate verify --repo ${options.repo} --task ${summary.taskId}`,
+        ],
+      };
+    });
+  });
+
+translate
+  .command("release")
+  .requiredOption("--task <taskId>", "task id to release")
+  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option("--drop-draft", "remove the current draft result when releasing")
+  .action(async (options) => {
+    await runWithSpinner("Releasing translation task", async ({ logger }) => {
+      const summary = await releaseTranslationTask(
+        options.repo,
+        {
+          taskId: options.task,
+          dropDraft: options.dropDraft,
+        },
+        logger,
+      );
+      return {
+        message: `Released ${summary.taskId}`,
+        details: [
+          `removed draft: ${summary.removedDraft ? "yes" : "no"}`,
+          `lease was expired: ${summary.wasExpired ? "yes" : "no"}`,
+        ],
+      };
+    });
+  });
+
+translate
+  .command("reclaim-expired")
+  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--drop-draft",
+    "remove draft result files while reclaiming expired tasks",
+  )
+  .action(async (options) => {
+    await runWithSpinner("Reclaiming expired tasks", async ({ logger }) => {
+      const summary = await reclaimExpiredTranslationTasks(
+        options.repo,
+        {
+          dropDraft: options.dropDraft,
+        },
+        logger,
+      );
+      return {
+        message: `Reclaimed ${summary.reclaimedTaskCount} expired tasks`,
+        details: [
+          `removed drafts: ${summary.removedDraftCount}`,
+          `tasks: ${summary.taskIds.join(", ") || "none"}`,
         ],
       };
     });
@@ -256,7 +326,11 @@ program
     console.log(`accepted translations: ${status.acceptedTranslationCount}`);
     console.log(`stale translations: ${status.staleTranslationCount}`);
     console.log(`pending tasks: ${status.pendingTaskCount}`);
+    console.log(`in-progress tasks: ${status.inProgressTaskCount}`);
     console.log(`done tasks: ${status.doneTaskCount}`);
+    console.log(`applied tasks: ${status.appliedTaskCount}`);
+    console.log(`invalid tasks: ${status.invalidTaskCount}`);
+    console.log(`expired leases: ${status.expiredLeaseTaskCount}`);
   });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
