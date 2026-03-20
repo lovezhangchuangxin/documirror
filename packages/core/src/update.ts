@@ -15,12 +15,13 @@ export async function updateMirror(
   repoDir: string,
   logger: Logger = defaultLogger,
   onCrawlProgress?: (progress: CrawlProgressUpdate) => void,
+  signal?: AbortSignal,
 ): Promise<{
   crawl: CrawlSummary;
   extract: ExtractSummary;
   plan: PlanSummary;
 }> {
-  const crawl = await crawlMirror(repoDir, logger, onCrawlProgress);
+  const crawl = await crawlMirror(repoDir, logger, onCrawlProgress, signal);
   const extract = await extractMirror(repoDir, logger);
   const plan = await planTranslations(repoDir, logger);
   return { crawl, extract, plan };

@@ -22,6 +22,7 @@ type LoadRobotsResult = {
 
 export async function loadRobots(
   config: MirrorConfig,
+  signal?: AbortSignal,
 ): Promise<LoadRobotsResult> {
   const source = new URL(config.sourceUrl);
   const robotsUrl = `${source.origin}/robots.txt`;
@@ -35,6 +36,7 @@ export async function loadRobots(
     timeoutMs: config.requestTimeoutMs,
     retryCount: config.requestRetryCount,
     retryDelayMs: config.requestRetryDelayMs,
+    signal,
   });
 
   if (!requestResult.ok) {

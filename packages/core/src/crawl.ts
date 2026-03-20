@@ -21,6 +21,7 @@ export async function crawlMirror(
   repoDir: string,
   logger: Logger = defaultLogger,
   onProgress?: (progress: CrawlProgressUpdate) => void,
+  signal?: AbortSignal,
 ): Promise<CrawlSummary> {
   const paths = getRepoPaths(repoDir);
   await ensureRepoStructure(paths);
@@ -35,6 +36,7 @@ export async function crawlMirror(
   const writeLimit = pLimit(Math.max(1, Math.min(config.crawlConcurrency, 8)));
 
   const crawlResult = await crawlWebsite(config, logger, {
+    signal,
     onProgress(progress) {
       onProgress?.(progress);
     },

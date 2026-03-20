@@ -225,6 +225,54 @@ describe("crawlWebsite", () => {
       },
     ]);
   });
+
+  it("aborts in-flight requests when the crawl signal is cancelled", async () => {
+    let resolvePageRequestStarted: (() => void) | undefined;
+    const pageRequestStarted = new Promise<void>((resolve) => {
+      resolvePageRequestStarted = resolve;
+    });
+
+    axiosGetMock.mockImplementation(
+      async (url: string, options?: { signal?: AbortSignal }) => {
+        switch (url) {
+          case "https://docs.example.com/robots.txt":
+            return textResponse("User-agent: *\nAllow: /\n");
+          case "https://docs.example.com/":
+            return new Promise((_resolve, reject) => {
+              resolvePageRequestStarted?.();
+              options?.signal?.addEventListener(
+                "abort",
+                () => {
+                  reject(createAxiosError("canceled", "ERR_CANCELED"));
+                },
+                { once: true },
+              );
+            });
+          default:
+            throw new Error(`Unexpected URL: ${url}`);
+        }
+      },
+    );
+
+    const controller = new AbortController();
+    const crawlPromise = crawlWebsite(
+      createConfig("https://docs.example.com/", 1),
+      silentLogger,
+      {
+        signal: controller.signal,
+      },
+    );
+
+    await pageRequestStarted;
+    controller.abort(
+      new Error("Interrupted by Ctrl+C; crawling source site cancelled"),
+    );
+
+    await expect(crawlPromise).rejects.toMatchObject({
+      name: "AbortError",
+      message: "Interrupted by Ctrl+C; crawling source site cancelled",
+    });
+  });
 });
 
 function createConfig(

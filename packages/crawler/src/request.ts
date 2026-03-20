@@ -12,6 +12,7 @@ type RequestOptions = {
   retryCount: number;
   retryDelayMs: number;
   isRetryableStatus?: (status: number) => boolean;
+  signal?: AbortSignal;
 };
 
 type RequestSuccess<T> = {
@@ -48,15 +49,21 @@ export async function requestWithRetry<T>(
 ): Promise<RequestResult<T>> {
   const isRetryableStatus =
     options.isRetryableStatus ?? defaultRetryableStatusMatcher;
+  const signal = options.signal;
   let timeoutCount = 0;
 
+  throwIfAborted(signal);
+
   for (let attempt = 0; attempt <= options.retryCount; attempt += 1) {
+    throwIfAborted(signal);
+
     try {
       const response = await axios.get<T>(options.url, {
         headers: options.headers,
         responseType: options.responseType,
         timeout: options.timeoutMs,
         validateStatus: () => true,
+        signal,
       });
 
       if (
@@ -69,6 +76,8 @@ export async function requestWithRetry<T>(
             response.headers["retry-after"],
             options.retryDelayMs,
           ),
+          undefined,
+          { signal },
         );
         continue;
       }
@@ -80,6 +89,10 @@ export async function requestWithRetry<T>(
         timeoutCount,
       };
     } catch (error) {
+      if (isAbortError(error, signal)) {
+        throw createAbortError(signal?.reason);
+      }
+
       const normalized = normalizeRequestError(error, options.timeoutMs);
       if (normalized.timedOut) {
         timeoutCount += 1;
@@ -88,6 +101,8 @@ export async function requestWithRetry<T>(
       if (attempt < options.retryCount && normalized.retryable) {
         await delay(
           resolveRetryDelayMs(attempt, undefined, options.retryDelayMs),
+          undefined,
+          { signal },
         );
         continue;
       }
@@ -108,6 +123,48 @@ export async function requestWithRetry<T>(
     attemptCount: options.retryCount + 1,
     timeoutCount,
   };
+}
+
+export function createAbortError(reason?: unknown): Error {
+  if (reason instanceof Error) {
+    reason.name = "AbortError";
+    return reason;
+  }
+
+  const message =
+    typeof reason === "string" && reason.trim().length > 0
+      ? reason
+      : "Operation aborted";
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted && error === signal.reason) {
+    return true;
+  }
+
+  if (error instanceof Error && error.name === "AbortError") {
+    return true;
+  }
+
+  if (axios.isAxiosError(error)) {
+    return error.code === "ERR_CANCELED";
+  }
+
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ABORT_ERR"
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError(signal.reason);
+  }
 }
 
 function defaultRetryableStatusMatcher(status: number): boolean {

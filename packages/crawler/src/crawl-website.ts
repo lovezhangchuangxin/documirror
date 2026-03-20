@@ -15,7 +15,7 @@ import {
 
 import { DEFAULT_USER_AGENT } from "./constants";
 import { discoverPageResources } from "./link-discovery";
-import { requestWithRetry } from "./request";
+import { createAbortError, isAbortError, requestWithRetry } from "./request";
 import { loadRobots } from "./robots";
 import type {
   CrawledAsset,
@@ -33,6 +33,7 @@ export async function crawlWebsite(
   sink: CrawlSink = {},
 ): Promise<CrawlResult> {
   const queue = new PQueue({ concurrency: config.crawlConcurrency });
+  const signal = sink.signal;
   const visitedPages = new Set<string>();
   const scheduledAssets = new Set<string>();
   const issues: CrawlIssue[] = [];
@@ -44,6 +45,13 @@ export async function crawlWebsite(
   };
   let pageCount = 0;
   let assetCount = 0;
+  let abortError: Error | undefined;
+
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      throw createAbortError(signal.reason);
+    }
+  };
 
   const reportProgress = (kind: CrawlProgress["kind"], url?: string) => {
     sink.onProgress?.({
@@ -78,45 +86,166 @@ export async function crawlWebsite(
   };
 
   const enqueueTask = (task: () => Promise<void>) => {
+    if (signal?.aborted) {
+      abortError ??= createAbortError(signal.reason);
+      return;
+    }
+
     const scheduled = queue.add(task);
     scheduled.catch((error: unknown) => {
+      if (isAbortError(error, signal)) {
+        abortError ??= createAbortError(signal?.reason ?? error);
+        queue.clear();
+        return;
+      }
+
       fatalErrors.push(normalizeError(error));
     });
   };
 
-  reportProgress("start");
-  const {
-    robots,
-    issue: robotsIssue,
-    retryCount,
-    timeoutCount,
-  } = await loadRobots(config);
-  stats.retriedRequests += retryCount;
-  stats.timedOutRequests += timeoutCount;
-  if (robotsIssue) {
-    recordIssue(robotsIssue);
-  }
+  const handleAbort = () => {
+    abortError ??= createAbortError(signal?.reason);
+    queue.clear();
+  };
 
-  const scheduleAsset = (
-    candidateUrl: string,
-    discoveredFrom: string | null,
-    initialBuffer?: Buffer,
-    hintedContentType?: string,
-  ) => {
-    const normalized = normalizeUrl(candidateUrl);
-    if (
-      scheduledAssets.has(normalized) ||
-      !isSameOrigin(config.sourceUrl, normalized)
-    ) {
-      return;
+  signal?.addEventListener("abort", handleAbort, { once: true });
+
+  try {
+    throwIfAborted();
+    reportProgress("start");
+    const {
+      robots,
+      issue: robotsIssue,
+      retryCount,
+      timeoutCount,
+    } = await loadRobots(config, signal);
+    stats.retriedRequests += retryCount;
+    stats.timedOutRequests += timeoutCount;
+    if (robotsIssue) {
+      recordIssue(robotsIssue);
     }
 
-    scheduledAssets.add(normalized);
-    enqueueTask(async () => {
-      let buffer = initialBuffer;
-      let contentType = hintedContentType;
+    const scheduleAsset = (
+      candidateUrl: string,
+      discoveredFrom: string | null,
+      initialBuffer?: Buffer,
+      hintedContentType?: string,
+    ) => {
+      const normalized = normalizeUrl(candidateUrl);
+      if (
+        scheduledAssets.has(normalized) ||
+        !isSameOrigin(config.sourceUrl, normalized)
+      ) {
+        return;
+      }
 
-      if (!buffer) {
+      scheduledAssets.add(normalized);
+      enqueueTask(async () => {
+        throwIfAborted();
+        let buffer = initialBuffer;
+        let contentType = hintedContentType;
+
+        if (!buffer) {
+          const requestResult = await requestWithRetry<ArrayBuffer>({
+            url: normalized,
+            headers: requestHeaders,
+            responseType: "arraybuffer",
+            timeoutMs: config.requestTimeoutMs,
+            retryCount: config.requestRetryCount,
+            retryDelayMs: config.requestRetryDelayMs,
+            signal,
+          });
+          trackRequest(requestResult.attemptCount, requestResult.timeoutCount);
+
+          if (!requestResult.ok) {
+            recordIssue({
+              kind: "asset-fetch",
+              severity: "warn",
+              url: normalized,
+              discoveredFrom,
+              code: requestResult.code,
+              attemptCount: requestResult.attemptCount,
+              message: `Failed to fetch asset (${requestResult.errorMessage})`,
+            });
+            return;
+          }
+
+          if (requestResult.response.status >= 400) {
+            recordIssue({
+              kind: "asset-fetch",
+              severity: "warn",
+              url: normalized,
+              discoveredFrom,
+              statusCode: requestResult.response.status,
+              attemptCount: requestResult.attemptCount,
+              message: `Received ${requestResult.response.status} while fetching asset`,
+            });
+            return;
+          }
+
+          buffer = Buffer.from(requestResult.response.data);
+          contentType = requestResult.response.headers["content-type"] as
+            | string
+            | undefined;
+        }
+
+        throwIfAborted();
+        if (!buffer) {
+          return;
+        }
+
+        if (!contentType) {
+          contentType =
+            (await fileTypeFromBuffer(buffer))?.mime ??
+            (mime.lookup(new URL(normalized).pathname) ||
+              "application/octet-stream");
+        }
+
+        const asset: CrawledAsset = {
+          url: normalized,
+          contentType,
+          outputPath: urlToAssetOutputPath(normalized),
+          buffer,
+        };
+
+        assetCount += 1;
+        reportProgress("asset", normalized);
+        throwIfAborted();
+        await sink.onAsset?.(asset);
+      });
+    };
+
+    const enqueuePage = (
+      candidateUrl: string,
+      discoveredFrom: string | null,
+    ) => {
+      const normalized = normalizeUrl(candidateUrl);
+      if (visitedPages.has(normalized)) {
+        return;
+      }
+
+      if (!isSameOrigin(config.sourceUrl, normalized)) {
+        return;
+      }
+
+      if (
+        !shouldIncludeUrl(
+          normalized,
+          config.includePatterns,
+          config.excludePatterns,
+        )
+      ) {
+        return;
+      }
+
+      visitedPages.add(normalized);
+      enqueueTask(async () => {
+        throwIfAborted();
+        if (!robots.isAllowed(normalized, DEFAULT_USER_AGENT)) {
+          stats.skippedByRobots += 1;
+          return;
+        }
+
         const requestResult = await requestWithRetry<ArrayBuffer>({
           url: normalized,
           headers: requestHeaders,
@@ -124,193 +253,110 @@ export async function crawlWebsite(
           timeoutMs: config.requestTimeoutMs,
           retryCount: config.requestRetryCount,
           retryDelayMs: config.requestRetryDelayMs,
+          signal,
         });
         trackRequest(requestResult.attemptCount, requestResult.timeoutCount);
 
         if (!requestResult.ok) {
           recordIssue({
-            kind: "asset-fetch",
+            kind: "page-fetch",
             severity: "warn",
             url: normalized,
             discoveredFrom,
             code: requestResult.code,
             attemptCount: requestResult.attemptCount,
-            message: `Failed to fetch asset (${requestResult.errorMessage})`,
+            message: `Failed to fetch page (${requestResult.errorMessage})`,
           });
           return;
         }
 
+        const contentType =
+          requestResult.response.headers["content-type"] ?? "text/html";
         if (requestResult.response.status >= 400) {
           recordIssue({
-            kind: "asset-fetch",
+            kind: "page-fetch",
             severity: "warn",
             url: normalized,
             discoveredFrom,
             statusCode: requestResult.response.status,
             attemptCount: requestResult.attemptCount,
-            message: `Received ${requestResult.response.status} while fetching asset`,
+            message: `Received ${requestResult.response.status} while fetching page`,
           });
           return;
         }
 
-        buffer = Buffer.from(requestResult.response.data);
-        contentType = requestResult.response.headers["content-type"] as
-          | string
-          | undefined;
-      }
+        throwIfAborted();
+        if (!contentType.toLowerCase().includes("html")) {
+          scheduleAsset(
+            normalized,
+            discoveredFrom,
+            Buffer.from(requestResult.response.data),
+            contentType || undefined,
+          );
+          return;
+        }
 
-      if (!buffer) {
-        return;
-      }
+        const html = Buffer.from(requestResult.response.data).toString("utf8");
+        const discovered = discoverPageResources(normalized, html);
 
-      if (!contentType) {
-        contentType =
-          (await fileTypeFromBuffer(buffer))?.mime ??
-          (mime.lookup(new URL(normalized).pathname) ||
-            "application/octet-stream");
-      }
-
-      const asset: CrawledAsset = {
-        url: normalized,
-        contentType,
-        outputPath: urlToAssetOutputPath(normalized),
-        buffer,
-      };
-
-      assetCount += 1;
-      reportProgress("asset", normalized);
-      await sink.onAsset?.(asset);
-    });
-  };
-
-  const enqueuePage = (candidateUrl: string, discoveredFrom: string | null) => {
-    const normalized = normalizeUrl(candidateUrl);
-    if (visitedPages.has(normalized)) {
-      return;
-    }
-
-    if (!isSameOrigin(config.sourceUrl, normalized)) {
-      return;
-    }
-
-    if (
-      !shouldIncludeUrl(
-        normalized,
-        config.includePatterns,
-        config.excludePatterns,
-      )
-    ) {
-      return;
-    }
-
-    visitedPages.add(normalized);
-    enqueueTask(async () => {
-      if (!robots.isAllowed(normalized, DEFAULT_USER_AGENT)) {
-        stats.skippedByRobots += 1;
-        return;
-      }
-
-      const requestResult = await requestWithRetry<ArrayBuffer>({
-        url: normalized,
-        headers: requestHeaders,
-        responseType: "arraybuffer",
-        timeoutMs: config.requestTimeoutMs,
-        retryCount: config.requestRetryCount,
-        retryDelayMs: config.requestRetryDelayMs,
-      });
-      trackRequest(requestResult.attemptCount, requestResult.timeoutCount);
-
-      if (!requestResult.ok) {
-        recordIssue({
-          kind: "page-fetch",
-          severity: "warn",
-          url: normalized,
-          discoveredFrom,
-          code: requestResult.code,
-          attemptCount: requestResult.attemptCount,
-          message: `Failed to fetch page (${requestResult.errorMessage})`,
+        discovered.invalidLinks.forEach((invalidLink) => {
+          recordIssue({
+            kind: "invalid-link",
+            severity: "warn",
+            url: normalized,
+            discoveredFrom: null,
+            message: `Ignoring invalid ${invalidLink.tagName}[${invalidLink.attributeName}] value "${invalidLink.rawValue}"`,
+          });
         });
-        return;
-      }
 
-      const contentType =
-        requestResult.response.headers["content-type"] ?? "text/html";
-      if (requestResult.response.status >= 400) {
-        recordIssue({
-          kind: "page-fetch",
-          severity: "warn",
-          url: normalized,
-          discoveredFrom,
-          statusCode: requestResult.response.status,
-          attemptCount: requestResult.attemptCount,
-          message: `Received ${requestResult.response.status} while fetching page`,
-        });
-        return;
-      }
-
-      if (!contentType.toLowerCase().includes("html")) {
-        scheduleAsset(
-          normalized,
-          discoveredFrom,
-          Buffer.from(requestResult.response.data),
-          contentType || undefined,
+        throwIfAborted();
+        discovered.assetUrls.forEach((assetUrl) =>
+          scheduleAsset(assetUrl, normalized),
         );
-        return;
-      }
+        discovered.pageLinks.forEach((linkUrl) =>
+          enqueuePage(linkUrl, normalized),
+        );
 
-      const html = Buffer.from(requestResult.response.data).toString("utf8");
-      const discovered = discoverPageResources(normalized, html);
-
-      discovered.invalidLinks.forEach((invalidLink) => {
-        recordIssue({
-          kind: "invalid-link",
-          severity: "warn",
+        const page: CrawledPage = {
           url: normalized,
-          discoveredFrom: null,
-          message: `Ignoring invalid ${invalidLink.tagName}[${invalidLink.attributeName}] value "${invalidLink.rawValue}"`,
-        });
+          canonicalUrl: normalized,
+          status: requestResult.response.status,
+          contentType: contentType || "text/html",
+          outputPath: urlToOutputPath(normalized),
+          discoveredFrom,
+          assetRefs: discovered.assetUrls,
+          html,
+          crawledAt: new Date().toISOString(),
+        };
+
+        pageCount += 1;
+        reportProgress("page", normalized);
+        throwIfAborted();
+        await sink.onPage?.(page);
       });
+    };
 
-      discovered.assetUrls.forEach((assetUrl) =>
-        scheduleAsset(assetUrl, normalized),
-      );
-      discovered.pageLinks.forEach((linkUrl) =>
-        enqueuePage(linkUrl, normalized),
-      );
+    const entryUrls =
+      config.entryUrls.length > 0 ? config.entryUrls : [config.sourceUrl];
+    entryUrls.forEach((url) => enqueuePage(url, null));
 
-      const page: CrawledPage = {
-        url: normalized,
-        canonicalUrl: normalized,
-        status: requestResult.response.status,
-        contentType: contentType || "text/html",
-        outputPath: urlToOutputPath(normalized),
-        discoveredFrom,
-        assetRefs: discovered.assetUrls,
-        html,
-        crawledAt: new Date().toISOString(),
-      };
+    await queue.onIdle();
+    if (abortError) {
+      throw abortError;
+    }
+    if (fatalErrors.length > 0) {
+      throw fatalErrors[0];
+    }
 
-      pageCount += 1;
-      reportProgress("page", normalized);
-      await sink.onPage?.(page);
-    });
-  };
-
-  const entryUrls =
-    config.entryUrls.length > 0 ? config.entryUrls : [config.sourceUrl];
-  entryUrls.forEach((url) => enqueuePage(url, null));
-
-  await queue.onIdle();
-  if (fatalErrors.length > 0) {
-    throw fatalErrors[0];
+    return {
+      pageCount,
+      assetCount,
+      issues: sortIssues(issues),
+      stats,
+    };
+  } finally {
+    signal?.removeEventListener("abort", handleAbort);
   }
-
-  return {
-    pageCount,
-    assetCount,
-    issues: sortIssues(issues),
-    stats,
-  };
 }
 
 function createEmptyCrawlStats(): CrawlStats {

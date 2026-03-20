@@ -70,6 +70,7 @@ export type CrawlSink = {
   onPage?: (page: CrawledPage) => void | Promise<void>;
   onAsset?: (asset: CrawledAsset) => void | Promise<void>;
   onProgress?: (progress: CrawlProgress) => void;
+  signal?: AbortSignal;
 };
 
 export type InvalidLinkReference = {

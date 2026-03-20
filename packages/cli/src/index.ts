@@ -58,10 +58,17 @@ program
   .action(async (options) => {
     await runWithSpinner(
       "Crawling source site",
-      async ({ logger, setText }) => {
-        const summary = await crawlMirror(options.repo, logger, (progress) => {
-          setText(formatCrawlProgress(progress.pageCount, progress.assetCount));
-        });
+      async ({ logger, setText, signal }) => {
+        const summary = await crawlMirror(
+          options.repo,
+          logger,
+          (progress) => {
+            setText(
+              formatCrawlProgress(progress.pageCount, progress.assetCount),
+            );
+          },
+          signal,
+        );
         if (shouldFailCrawl(summary)) {
           throw new Error(formatFatalCrawlMessage(summary));
         }
@@ -124,12 +131,17 @@ program
   .action(async (options) => {
     await runWithSpinner(
       "Running incremental update",
-      async ({ logger, setText }) => {
-        const summary = await updateMirror(options.repo, logger, (progress) => {
-          setText(
-            `Running incremental update: ${formatCount(progress.pageCount, "page")}, ${formatCount(progress.assetCount, "asset")} crawled`,
-          );
-        });
+      async ({ logger, setText, signal }) => {
+        const summary = await updateMirror(
+          options.repo,
+          logger,
+          (progress) => {
+            setText(
+              `Running incremental update: ${formatCount(progress.pageCount, "page")}, ${formatCount(progress.assetCount, "asset")} crawled`,
+            );
+          },
+          signal,
+        );
         return `Update finished: ${summary.crawl.pageCount} pages crawled, ${summary.extract.segmentCount} segments extracted, ${summary.plan.taskCount} tasks created`;
       },
     );
@@ -172,10 +184,37 @@ async function runWithSpinner(
   title: string,
   run: (controls: SpinnerControls) => Promise<string | CommandOutput>,
 ): Promise<void> {
-  const spinner = ora(title).start();
-  const controls = createSpinnerControls(spinner);
+  const spinner = ora({
+    text: title,
+    discardStdin: false,
+  });
+  const controller = new AbortController();
+  const exitState = { code: 1 };
+  let forcedExitTimer: NodeJS.Timeout | undefined;
+  const controls = createSpinnerControls(spinner, controller.signal);
+
+  const cleanupSignals = installSignalHandlers({
+    title,
+    spinner,
+    controller,
+    exitState,
+    onForceExitScheduled(timer) {
+      forcedExitTimer = timer;
+    },
+  });
+
+  spinner.start();
+
   try {
     const result = await run(controls);
+    if (controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      const message = reason instanceof Error ? reason.message : String(reason);
+      spinner.fail(message);
+      process.exitCode = exitState.code;
+      return;
+    }
+
     const output: CommandOutput =
       typeof result === "string" ? { message: result, details: [] } : result;
     spinner.succeed(output.message);
@@ -183,17 +222,24 @@ async function runWithSpinner(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     spinner.fail(message);
-    process.exitCode = 1;
+    process.exitCode = exitState.code;
+  } finally {
+    cleanupSignals();
+    if (forcedExitTimer) {
+      clearTimeout(forcedExitTimer);
+    }
   }
 }
 
 type SpinnerControls = {
   logger: Logger;
   setText: (message: string) => void;
+  signal: AbortSignal;
 };
 
 function createSpinnerControls(
   spinner: ReturnType<typeof ora>,
+  signal: AbortSignal,
 ): SpinnerControls {
   const setText = (message: string) => {
     spinner.text = message;
@@ -212,6 +258,7 @@ function createSpinnerControls(
       },
     },
     setText,
+    signal,
   };
 }
 
@@ -231,4 +278,70 @@ function formatCrawlProgress(pageCount: number, assetCount: number): string {
 
 function formatCount(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function installSignalHandlers(options: {
+  title: string;
+  spinner: ReturnType<typeof ora>;
+  controller: AbortController;
+  exitState: { code: number };
+  onForceExitScheduled: (timer: NodeJS.Timeout) => void;
+}): () => void {
+  const { title, spinner, controller, exitState, onForceExitScheduled } =
+    options;
+
+  const handleSignal = (signalName: NodeJS.Signals) => {
+    const exitCode = signalToExitCode(signalName);
+    exitState.code = exitCode;
+
+    if (!controller.signal.aborted) {
+      controller.abort(createInterruptError(signalName, title));
+      spinner.text = `${title} (stopping...)`;
+      const timer = setTimeout(() => {
+        spinner.stop();
+        process.exit(exitCode);
+      }, 5_000);
+      timer.unref();
+      onForceExitScheduled(timer);
+      return;
+    }
+
+    spinner.stop();
+    process.exit(exitCode);
+  };
+
+  const onSigint = () => handleSignal("SIGINT");
+  const onSigterm = () => handleSignal("SIGTERM");
+
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+
+  return () => {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
+}
+
+function createInterruptError(
+  signalName: NodeJS.Signals,
+  title: string,
+): Error {
+  const action =
+    signalName === "SIGINT"
+      ? "Interrupted by Ctrl+C"
+      : `Interrupted by ${signalName}`;
+  const error = new Error(`${action}; ${title.toLowerCase()} cancelled`);
+  error.name = "AbortError";
+  return error;
+}
+
+function signalToExitCode(signalName: NodeJS.Signals): number {
+  switch (signalName) {
+    case "SIGINT":
+      return 130;
+    case "SIGTERM":
+      return 143;
+    default:
+      return 1;
+  }
 }

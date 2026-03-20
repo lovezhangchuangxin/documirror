@@ -240,4 +240,45 @@ describe("crawlMirror", () => {
       },
     ]);
   });
+
+  it("forwards abort signals to the crawler", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-crawl-signal-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com/",
+      targetLocale: "zh-CN",
+    });
+
+    const controller = new AbortController();
+    crawlWebsiteMock.mockImplementation(
+      async (
+        _config: unknown,
+        _logger: unknown,
+        sink: {
+          signal?: AbortSignal;
+        },
+      ) => {
+        expect(sink.signal).toBe(controller.signal);
+
+        return {
+          pageCount: 0,
+          assetCount: 0,
+          issues: [],
+          stats: {
+            pageFailures: 0,
+            assetFailures: 0,
+            invalidLinks: 0,
+            skippedByRobots: 0,
+            retriedRequests: 0,
+            timedOutRequests: 0,
+            robotsFailures: 0,
+          },
+        };
+      },
+    );
+
+    await crawlMirror(repoDir, silentLogger, undefined, controller.signal);
+  });
 });
