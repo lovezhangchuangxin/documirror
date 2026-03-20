@@ -1,10 +1,14 @@
 import type { RunTranslationsProgressEvent } from "@documirror/core";
+import pc from "picocolors";
 
 type ActiveRunTask = {
   taskId: string;
   attempt: number;
   maxAttempts: number;
+  /** When the current attempt started (for timeout detection) */
   attemptStartedAt: number;
+  /** When the task first started (for total duration tracking) */
+  taskStartedAt: number;
 };
 
 export type RunProgressState = {
@@ -18,6 +22,10 @@ export type RunProgressState = {
   requestTimeoutMs: number;
   startedAt: number;
   activeTasks: Map<string, ActiveRunTask>;
+  // Metrics for success rate and average duration
+  totalAttempts: number;
+  totalSuccessDurationMs: number;
+  successWithDurationCount: number;
 };
 
 export function createRunProgressState(now = Date.now()): RunProgressState {
@@ -32,6 +40,9 @@ export function createRunProgressState(now = Date.now()): RunProgressState {
     requestTimeoutMs: 0,
     startedAt: now,
     activeTasks: new Map(),
+    totalAttempts: 0,
+    totalSuccessDurationMs: 0,
+    successWithDurationCount: 0,
   };
 }
 
@@ -51,6 +62,9 @@ export function applyRunProgressEvent(
     state.requestTimeoutMs = event.requestTimeoutMs;
     state.startedAt = now;
     state.activeTasks.clear();
+    state.totalAttempts = 0;
+    state.totalSuccessDurationMs = 0;
+    state.successWithDurationCount = 0;
     return;
   }
 
@@ -58,24 +72,41 @@ export function applyRunProgressEvent(
   state.completed = event.completed;
 
   if (event.type === "started") {
-    const current = state.activeTasks.get(event.taskId);
+    // Task starts - initialize with fresh timestamps
     state.activeTasks.set(event.taskId, {
       taskId: event.taskId,
-      attempt: current?.attempt ?? 1,
-      maxAttempts: current?.maxAttempts ?? 0,
-      attemptStartedAt: current?.attemptStartedAt ?? now,
+      attempt: 1,
+      maxAttempts: 0,
+      attemptStartedAt: now,
+      taskStartedAt: now,
     });
     return;
   }
 
   if (event.type === "attempt") {
+    state.totalAttempts += 1;
+    const current = state.activeTasks.get(event.taskId);
     state.activeTasks.set(event.taskId, {
       taskId: event.taskId,
       attempt: event.attempt,
       maxAttempts: event.maxAttempts,
       attemptStartedAt: now,
+      // Preserve the original task start time
+      taskStartedAt: current?.taskStartedAt ?? now,
     });
     return;
+  }
+
+  // For completed/failed events
+  const activeTask = state.activeTasks.get(event.taskId);
+  if (activeTask) {
+    // Use taskStartedAt to track total duration from task start (including retries)
+    const durationMs = now - activeTask.taskStartedAt;
+    if (event.type === "completed") {
+      state.totalSuccessDurationMs += durationMs;
+      state.successWithDurationCount += 1;
+    }
+    // Note: failed attempts are already counted via totalAttempts - successCount
   }
 
   state.successCount = event.successCount;
@@ -91,28 +122,83 @@ export function formatRunProgressMessage(
     return "Running automatic translation: no pending tasks";
   }
 
+  // Colored summary parts with progress gradient
+  const progressPct = (state.completed / state.total) * 100;
+  const progressColored =
+    progressPct >= 100
+      ? pc.green(`${state.completed}/${state.total}`)
+      : progressPct >= 50
+        ? pc.cyan(`${state.completed}/${state.total}`)
+        : pc.gray(`${state.completed}/${state.total}`);
+
   const summary = [
-    `${state.completed}/${state.total} complete`,
-    `${state.successCount} succeeded`,
-    `${state.failureCount} failed`,
-    `${state.activeTasks.size} running`,
-    `${Math.max(0, state.total - state.completed - state.activeTasks.size)} waiting`,
+    `${progressColored} complete`,
+    pc.green(`${state.successCount} succeeded`),
+    state.failureCount > 0
+      ? pc.red(`${state.failureCount} failed`)
+      : `${state.failureCount} failed`,
+    pc.cyan(`${state.activeTasks.size} running`),
+    pc.gray(
+      `${Math.max(0, state.total - state.completed - state.activeTasks.size)} waiting`,
+    ),
   ];
+
+  // Calculate metrics
+  // Average duration: total time from task start to completion (including retries)
+  const avgDuration =
+    state.successWithDurationCount > 0
+      ? state.totalSuccessDurationMs / state.successWithDurationCount
+      : 0;
+  // Success rate: successful tasks / total attempts
+  // Each successful task represents 1 successful attempt (the final one)
+  // Total attempts includes all retries
+  const successRate =
+    state.totalAttempts > 0
+      ? (state.successCount / state.totalAttempts) * 100
+      : 100;
+
+  const metrics: string[] = [];
+  if (avgDuration > 0) {
+    metrics.push(`avg ${formatDuration(avgDuration)}/task`);
+  }
+  if (state.totalAttempts > 0) {
+    // Color success rate based on value
+    const rateStr = `${successRate.toFixed(0)}% success`;
+    if (successRate >= 80) {
+      metrics.push(pc.green(rateStr));
+    } else if (successRate >= 50) {
+      metrics.push(pc.yellow(rateStr));
+    } else {
+      metrics.push(pc.red(rateStr));
+    }
+  }
+
   const details = [
     formatModelLabel(state.provider, state.model),
     `concurrency ${state.concurrency}`,
     `timeout ${formatSeconds(state.requestTimeoutMs)}`,
     `elapsed ${formatDuration(now - state.startedAt)}`,
+    ...metrics,
   ].filter((part) => part.length > 0);
-  const activeSummary = formatActiveTaskSummary(state, now);
 
-  return [
+  // Header line with summary and config info
+  const header = [
     `Running automatic translation: ${summary.join(", ")}`,
     details.join(", "),
-    activeSummary,
-  ]
-    .filter((part) => part.length > 0)
-    .join(" | ");
+  ].join(" | ");
+
+  // If no active tasks, show simple status
+  if (state.activeTasks.size === 0) {
+    if (state.completed < state.total) {
+      return `${header}\n  ${pc.gray("└─")} waiting to schedule next task`;
+    }
+    return header;
+  }
+
+  // Format each active task on its own line
+  const activeTaskLines = formatActiveTaskLines(state, now);
+
+  return [header, ...activeTaskLines].join("\n");
 }
 
 function formatModelLabel(provider: string, model: string): string {
@@ -123,36 +209,38 @@ function formatModelLabel(provider: string, model: string): string {
   return `model ${provider}/${model}`.replace(/\/$/u, "");
 }
 
-function formatActiveTaskSummary(state: RunProgressState, now: number): string {
-  if (state.activeTasks.size === 0) {
-    if (state.completed < state.total) {
-      return "waiting to schedule the next task";
-    }
-
-    return "";
-  }
-
+function formatActiveTaskLines(state: RunProgressState, now: number): string[] {
   const activeTasks = [...state.activeTasks.values()].sort(
     (left, right) => left.attemptStartedAt - right.attemptStartedAt,
   );
-  const preview = activeTasks.slice(0, 2).map((task) => {
+
+  return activeTasks.map((task, index) => {
+    const isLast = index === activeTasks.length - 1;
+    const prefix = isLast ? pc.gray("  └─") : pc.gray("  ├─");
+
     const attempt =
       task.maxAttempts > 0
         ? `${task.attempt}/${task.maxAttempts}`
         : `${task.attempt}`;
     const waitMs = now - task.attemptStartedAt;
-    const timeoutHint =
-      state.requestTimeoutMs > 0 && waitMs > state.requestTimeoutMs
-        ? " (past timeout)"
-        : "";
-    return `${task.taskId} attempt ${attempt} for ${formatDuration(waitMs)}${timeoutHint}`;
-  });
-  const remaining =
-    activeTasks.length > preview.length
-      ? `, +${activeTasks.length - preview.length} more`
-      : "";
+    const isPastTimeout =
+      state.requestTimeoutMs > 0 && waitMs > state.requestTimeoutMs;
+    const timeoutHint = isPastTimeout ? pc.red(" ⚠ past timeout") : "";
 
-  return `waiting for model responses: ${preview.join(", ")}${remaining}`;
+    // Color the task ID in cyan
+    const taskIdStr = pc.cyan(task.taskId);
+    // Color attempt info based on retry count
+    const attemptStr =
+      task.attempt > 1
+        ? pc.yellow(`attempt ${attempt}`)
+        : pc.dim(`attempt ${attempt}`);
+    // Color waiting time based on timeout status
+    const waitingStr = isPastTimeout
+      ? pc.red(`waiting ${formatDuration(waitMs)}`)
+      : pc.dim(`waiting ${formatDuration(waitMs)}`);
+
+    return `${prefix} [${taskIdStr}] ${attemptStr}, ${waitingStr}${timeoutHint}`;
+  });
 }
 
 function formatSeconds(milliseconds: number): string {
