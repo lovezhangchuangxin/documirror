@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { urlToAssetOutputPath, urlToOutputPath } from "@documirror/shared";
 import type { Manifest, MirrorConfig } from "@documirror/shared";
 
-import { rewriteLinks } from "./link-rewriter";
+import { rewriteLinks } from "../link-rewriter";
 
 describe("rewriteLinks", () => {
   it("preserves fragments and rewrites srcset entries", () => {

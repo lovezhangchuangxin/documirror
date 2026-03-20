@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { urlToAssetOutputPath, urlToOutputPath } from "./url";
+import { urlToAssetOutputPath, urlToOutputPath } from "../url";
 
 describe("url output paths", () => {
   it("keeps query variants on distinct page output paths", () => {

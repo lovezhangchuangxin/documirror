@@ -6,7 +6,7 @@ import {
   formatCrawlOutput,
   formatFatalCrawlMessage,
   shouldFailCrawl,
-} from "./crawl-output";
+} from "../crawl-output";
 
 describe("crawl-output", () => {
   it("formats crawl summaries with issue samples", () => {

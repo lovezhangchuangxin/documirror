@@ -14,7 +14,7 @@ vi.mock("axios", () => ({
   },
 }));
 
-import { crawlWebsite } from "./crawl-website";
+import { crawlWebsite } from "../crawl-website";
 
 const silentLogger: Logger = {
   info() {},

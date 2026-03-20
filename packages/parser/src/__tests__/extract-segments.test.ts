@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { MirrorConfig } from "@documirror/shared";
 
-import { extractSegmentsFromHtml } from "./extract-segments";
+import { extractSegmentsFromHtml } from "../extract-segments";
 
 describe("extractSegmentsFromHtml", () => {
   it("deduplicates overlapping include roots", () => {
