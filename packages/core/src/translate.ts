@@ -38,8 +38,11 @@ import type {
 import {
   createTimestamp,
   defaultLogger,
+  extractPlaceholderTokens,
   hashString,
   normalizeText,
+  parseInlineCodeSpans,
+  replacePlaceholderTokens,
   translationTaskManifestEntrySchema,
   translationTaskManifestSchema,
   translationVerificationReportSchema,
@@ -67,8 +70,6 @@ import type {
 
 const VERIFY_REPORT_DIR = "translation-verify";
 const RUN_REPORT_DIR = "translation-run";
-const PLACEHOLDER_TOKEN_REGEX =
-  /\{\{[^{}]+\}\}|\{[A-Za-z0-9_.-]+\}|%(\d+\$)?[+#0\- ]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[sdifo]|<\/?\d+>|\$[A-Z_][A-Z0-9_]*/gu;
 const TASK_STATUS_ORDER = {
   pending: 0,
   done: 1,
@@ -596,7 +597,7 @@ async function runSingleTask(options: {
       onDebug?.(
         `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} received response after ${formatRunDuration(Date.now() - requestStartedAt)}`,
       );
-      previousResponse = translated.rawText;
+      previousResponse = JSON.stringify(translated.draft, null, 2);
 
       const verification = verifyCandidateResult(
         task,
@@ -1623,11 +1624,6 @@ function validateGlossaryTargets(
   return issues;
 }
 
-function extractPlaceholderTokens(value: string): string[] {
-  PLACEHOLDER_TOKEN_REGEX.lastIndex = 0;
-  return [...value.matchAll(PLACEHOLDER_TOKEN_REGEX)].map((match) => match[0]);
-}
-
 function extractListMarkerPrefix(value: string): string | null {
   const match = value.match(/^\s*(?:[-*+]\s+\[(?: |x|X)\]|[-*+]|\d+\.)\s+/u);
   return match?.[0] ?? null;
@@ -1696,7 +1692,7 @@ function looksUntranslated(
 
 function stripComparableText(value: string): string {
   return normalizeText(
-    stripInlineCodeText(value).replace(PLACEHOLDER_TOKEN_REGEX, " "),
+    replacePlaceholderTokens(stripInlineCodeText(value), " "),
   )
     .replace(/[\p{P}\p{S}]+/gu, " ")
     .trim()
@@ -2236,52 +2232,6 @@ function isSerializedEqual(left: unknown, right: unknown): boolean {
 
 function parseCandidateResult(body: string): TranslationResultFile {
   return parseResultFile(JSON.parse(body));
-}
-
-function parseInlineCodeSpans(
-  value: string,
-): { textSegments: string[]; inlineCodeSpans: string[] } | null {
-  const textSegments: string[] = [];
-  const inlineCodeSpans: string[] = [];
-  let cursor = 0;
-  let textBuffer = "";
-
-  while (cursor < value.length) {
-    if (value[cursor] !== "`") {
-      textBuffer += value[cursor];
-      cursor += 1;
-      continue;
-    }
-
-    const fenceLength = countBackticks(value, cursor);
-    const fence = "`".repeat(fenceLength);
-    const contentStart = cursor + fenceLength;
-    const contentEnd = value.indexOf(fence, contentStart);
-    if (contentEnd < 0) {
-      return null;
-    }
-
-    textSegments.push(textBuffer);
-    textBuffer = "";
-    inlineCodeSpans.push(value.slice(contentStart, contentEnd));
-    cursor = contentEnd + fenceLength;
-  }
-
-  textSegments.push(textBuffer);
-  return {
-    textSegments,
-    inlineCodeSpans,
-  };
-}
-
-function countBackticks(value: string, startIndex: number): number {
-  let length = 0;
-
-  while (value[startIndex + length] === "`") {
-    length += 1;
-  }
-
-  return length;
 }
 
 function createTaskId(pageUrl: string): string {

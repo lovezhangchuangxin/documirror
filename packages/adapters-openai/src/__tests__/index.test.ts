@@ -205,4 +205,172 @@ describe("adapters-openai", () => {
       ]),
     );
   });
+
+  it("adds protected-token guidance and retry context to the prompt", async () => {
+    mockCreate.mockResolvedValueOnce(
+      createChunkStream([
+        '{"schemaVersion":2,"taskId":"task_test","translations":[',
+        '{"id":"1","translatedText":"将 `snap-always` 用于 % i 个条目"}',
+        "]}",
+      ]),
+    );
+
+    await translateTaskWithOpenAi({
+      ...createOptions(),
+      task: {
+        ...createOptions().task,
+        content: [
+          {
+            id: "1",
+            text: "Use `snap-always` for % i items",
+            note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
+          },
+        ],
+      },
+      previousResponse: JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: "task_test",
+          translations: [
+            {
+              id: "1",
+              translatedText: "将 snap-always 用于 %i 个条目",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      verificationIssues: [
+        {
+          code: "inline_code_mismatch",
+          message:
+            'Translation for id "1" must preserve inline code spans ["snap-always"] in the original order',
+          jsonPath: "$.translations[0].translatedText",
+        },
+        {
+          code: "placeholder_mismatch",
+          message: 'Translation must preserve placeholders ["% i"] exactly',
+          jsonPath: "$.translations[0].translatedText",
+        },
+      ],
+    });
+
+    const request = mockCreate.mock.calls[0]?.[0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const systemPrompt = request.messages[0]?.content ?? "";
+    const userPrompt = request.messages[1]?.content ?? "";
+
+    expect(systemPrompt).toContain(
+      "Preserve placeholders byte-for-byte, including spaces inside them.",
+    );
+    expect(systemPrompt).toContain(
+      "Do not move words across inline code spans;",
+    );
+    expect(userPrompt).toContain("Protected item checklist");
+    expect(userPrompt).toContain('"preserveInlineCodeSpans": [');
+    expect(userPrompt).toContain('"snap-always"');
+    expect(userPrompt).toContain('"preservePlaceholders": [');
+    expect(userPrompt).toContain('"% i"');
+    expect(userPrompt).toContain('"inlineCodeTextSlotLayout": [');
+    expect(userPrompt).toContain(
+      "Previous response that needs fixing. Use it as the base",
+    );
+    expect(userPrompt).toContain(
+      "Items that failed verification and must be repaired:",
+    );
+    expect(userPrompt).toContain(
+      '"currentTranslatedText": "将 snap-always 用于 %i 个条目"',
+    );
+    expect(userPrompt).toContain('"validationErrors": [');
+    expect(userPrompt).toContain(
+      'Translation for id \\"1\\" must preserve inline code spans [\\"snap-always\\"] in the original order',
+    );
+  });
+
+  it("targets retry context by actual response items for id ordering issues", async () => {
+    mockCreate.mockResolvedValueOnce(
+      createChunkStream([
+        '{"schemaVersion":2,"taskId":"task_test","translations":[',
+        '{"id":"1","translatedText":"第一项"},',
+        '{"id":"2","translatedText":"第二项 `snap-always`"}',
+        "]}",
+      ]),
+    );
+
+    await translateTaskWithOpenAi({
+      ...createOptions(),
+      task: {
+        ...createOptions().task,
+        content: [
+          {
+            id: "1",
+            text: "First item",
+          },
+          {
+            id: "2",
+            text: "Second `snap-always` item",
+            note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
+          },
+        ],
+      },
+      previousResponse: JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: "task_test",
+          translations: [
+            {
+              id: "2",
+              translatedText: "第二项 `snap-always`",
+            },
+            {
+              id: "2",
+              translatedText: "重复第二项 `snap-always`",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      verificationIssues: [
+        {
+          code: "id_out_of_order",
+          message:
+            'Expected translation "1" at position 1 but found "2"; renumber items to match 1..2',
+          jsonPath: "$.translations[0].id",
+        },
+        {
+          code: "id_duplicate",
+          message:
+            'Duplicate translation "2" found; each id must appear exactly once',
+          jsonPath: "$.translations[1].id",
+        },
+        {
+          code: "id_missing",
+          message:
+            'Missing translation "1"; add the missing items so ids run strictly from 1 to 2',
+          jsonPath: "$.translations",
+        },
+      ],
+    });
+
+    const request = mockCreate.mock.calls[0]?.[0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const userPrompt = request.messages[1]?.content ?? "";
+
+    expect(userPrompt).toContain('"responseIndex": 1');
+    expect(userPrompt).toContain('"actualResponseId": "2"');
+    expect(userPrompt).toContain('"expectedTaskIdAtPosition": "1"');
+    expect(userPrompt).toContain('"sourceText": "Second `snap-always` item"');
+    expect(userPrompt).toContain(
+      '"expectedSourceTextAtPosition": "First item"',
+    );
+    expect(userPrompt).toContain(
+      '"currentTranslatedText": "第二项 `snap-always`"',
+    );
+    expect(userPrompt).toContain('"missingTaskId": "1"');
+    expect(userPrompt).toContain('"validationErrors": [');
+  });
 });

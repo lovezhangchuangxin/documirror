@@ -63,6 +63,8 @@ If automatic translation fails for a task, inspect \`reports/translation-run/<ta
 - Backtick-wrapped text is inline code
 - Never translate inline code
 - Keep the same inline code spans in the same order
+- Keep surrounding natural language in the same slots before, between, and after inline code
+- Do not move words across inline code boundaries
 - Example: \`Use \`snap-always\` here\` -> \`这里使用 \`snap-always\`\`
 
 ### 5. Formatting Preservation

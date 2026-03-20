@@ -251,7 +251,7 @@ function assembleInlineCodeText(run: ChildDescriptor[]): string {
 }
 
 function createInlineCodeNote(): string {
-  return "Treat text wrapped in backticks as code literals and keep it unchanged in the same order.";
+  return "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.";
 }
 
 function renderInlineCodeSpan(text: string): string {

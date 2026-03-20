@@ -364,6 +364,117 @@ describe("documirror core pipeline", () => {
     expect(status.doneTaskCount).toBe(0);
   });
 
+  it("passes normalized retry context after validation failures", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: {
+        ...createAiConfig(),
+        maxAttemptsPerTask: 2,
+      },
+      authToken: "secret-token",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><p>Use the <code>snap-always</code> utility together</p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const invalidDraft = {
+      schemaVersion: 2 as const,
+      taskId: "task_dc3d488a4e",
+      translations: [
+        {
+          id: "1",
+          translatedText: "一起使用 snap-always 工具",
+        },
+      ],
+    };
+    const validDraft = {
+      schemaVersion: 2 as const,
+      taskId: "task_dc3d488a4e",
+      translations: [
+        {
+          id: "1",
+          translatedText: "一起使用 `snap-always` 工具",
+        },
+      ],
+    };
+
+    mockTranslateTaskWithOpenAi
+      .mockResolvedValueOnce({
+        rawText: `\`\`\`json\n${JSON.stringify(invalidDraft)}\n\`\`\``,
+        draft: invalidDraft,
+      })
+      .mockResolvedValueOnce({
+        rawText: JSON.stringify(validDraft),
+        draft: validDraft,
+      });
+
+    const summary = await runTranslations(repoDir);
+    expect(summary.successCount).toBe(1);
+    expect(summary.failureCount).toBe(0);
+    expect(mockTranslateTaskWithOpenAi).toHaveBeenCalledTimes(2);
+
+    const secondCall = mockTranslateTaskWithOpenAi.mock.calls[1]?.[0] as {
+      previousResponse?: string;
+      verificationIssues?: Array<{ code: string; message: string }>;
+    };
+    expect(secondCall.previousResponse).toBe(
+      JSON.stringify(invalidDraft, null, 2),
+    );
+    expect(secondCall.verificationIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "inline_code_mismatch",
+          message: expect.stringContaining("snap-always"),
+        }),
+      ]),
+    );
+  });
+
   it("marks malformed done results invalid and verify reports schema errors", async () => {
     const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
     createdDirs.push(repoDir);

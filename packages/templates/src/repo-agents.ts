@@ -127,6 +127,7 @@ pnpm documirror:doctor
 - Always check \`.documirror/glossary.json\` before translating.
 - Keep \`.env\` private and never commit provider tokens.
 - Preserve inline code, placeholders, list markers, markdown structure, and HTML entities.
+- Do not move surrounding text across inline code boundaries.
 - Run verify if you modify a result manually; do not bypass \`translate apply\`.
 - Apply results through the CLI instead of editing \`translations.jsonl\` directly.
 - Read \`.documirror/TASKS.md\` for the task result schema and translation-specific rules.

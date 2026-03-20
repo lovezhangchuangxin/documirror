@@ -82,7 +82,7 @@ describe("extractSegmentsFromHtml", () => {
           }),
         ],
         text: "Use the `snap-always` utility together",
-        note: "Treat text wrapped in backticks as code literals and keep it unchanged in the same order.",
+        note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
         inlineCodeSpans: [
           {
             text: "snap-always",
@@ -113,7 +113,7 @@ describe("extractSegmentsFromHtml", () => {
           }),
         ],
         text: "`snap-always` is enabled",
-        note: "Treat text wrapped in backticks as code literals and keep it unchanged in the same order.",
+        note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
         inlineCodeSpans: [
           {
             text: "snap-always",
@@ -128,7 +128,7 @@ describe("extractSegmentsFromHtml", () => {
           }),
         ],
         text: "Run `npm install`",
-        note: "Treat text wrapped in backticks as code literals and keep it unchanged in the same order.",
+        note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
         inlineCodeSpans: [
           {
             text: "npm install",

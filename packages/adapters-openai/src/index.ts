@@ -6,7 +6,11 @@ import type {
   TranslationTaskFile,
   TranslationVerificationIssue,
 } from "@documirror/shared";
-import { translationDraftResultFileSchema } from "@documirror/shared";
+import {
+  extractPlaceholderTokens,
+  parseInlineCodeSpans,
+  translationDraftResultFileSchema,
+} from "@documirror/shared";
 
 export type OpenAiConnectionOptions = {
   config: MirrorAiConfig;
@@ -29,6 +33,31 @@ export type OpenAiTranslationOptions = OpenAiConnectionOptions & {
 export type OpenAiTranslationResult = {
   rawText: string;
   draft: TranslationDraftResultFile;
+};
+
+type ProtectedTextGuidance = {
+  preservePlaceholders?: string[];
+  preserveInlineCodeSpans?: string[];
+  inlineCodeTextSlotLayout?: Array<"text" | "empty">;
+  note?: string;
+};
+
+type RetryPromptEntry = {
+  validationErrors: string[];
+  responseIndex?: number;
+  actualResponseId?: string;
+  expectedTaskIdAtPosition?: string;
+  sourceText?: string;
+  expectedSourceTextAtPosition?: string;
+  currentTranslatedText?: string;
+  missingTaskId?: string;
+} & ProtectedTextGuidance;
+
+type RetryDraftSnapshot = {
+  translations: Array<{
+    id: string;
+    translatedText: string;
+  }>;
 };
 
 export async function testOpenAiConnection(
@@ -433,6 +462,9 @@ function createSystemPrompt(): string {
     "Do not omit or add items.",
     "Preserve placeholders, markdown structure, list markers, HTML entities, and inline code in backticks.",
     "Do not translate inline code spans or placeholders.",
+    "Preserve placeholders byte-for-byte, including spaces inside them.",
+    "For items with inline code, keep text in the same slots before, between, and after code spans.",
+    "Do not move words across inline code spans; if the source starts or ends with code, the translation must do the same.",
     "Apply glossary terms exactly when source terms appear.",
   ].join(" ");
 }
@@ -442,16 +474,43 @@ function createUserPrompt(
   previousResponse?: string,
   verificationIssues: TranslationVerificationIssue[] = [],
 ): string {
+  const protectedItems = createProtectedItemChecklist(task);
+  const retryItems = createRetryItemChecklist(
+    task,
+    previousResponse,
+    verificationIssues,
+  );
   const parts = [
     `Translate the following DocuMirror task to ${task.targetLocale}.`,
     "Return a complete JSON result object.",
+    "Before returning JSON, self-check that protected placeholders and inline code are copied exactly from the source.",
     "",
     "Task JSON:",
     JSON.stringify(task, null, 2),
   ];
 
+  if (protectedItems.length > 0) {
+    parts.push(
+      "",
+      "Protected item checklist (reference only, not part of the output):",
+      JSON.stringify(protectedItems, null, 2),
+    );
+  }
+
   if (previousResponse) {
-    parts.push("", "Previous response that needs fixing:", previousResponse);
+    parts.push(
+      "",
+      "Previous response that needs fixing. Use it as the base, and keep already-valid items unchanged unless a listed error requires an edit:",
+      previousResponse,
+    );
+  }
+
+  if (retryItems.length > 0) {
+    parts.push(
+      "",
+      "Items that failed verification and must be repaired:",
+      JSON.stringify(retryItems, null, 2),
+    );
   }
 
   if (verificationIssues.length > 0) {
@@ -462,7 +521,301 @@ function createUserPrompt(
     );
   }
 
+  parts.push(
+    "",
+    "Final checklist before responding:",
+    "- keep ids and order unchanged",
+    "- keep every translation item present",
+    "- preserve placeholders exactly, including internal spaces",
+    "- preserve inline code spans exactly and keep text in the same code-adjacent slots",
+  );
+
   return parts.join("\n");
+}
+
+function createProtectedItemChecklist(
+  task: TranslationTaskFile,
+): Array<Record<string, unknown>> {
+  return task.content.flatMap((item) => {
+    const guidance = createProtectedTextGuidance(item);
+    if (!hasProtectedTextGuidance(guidance)) {
+      return [];
+    }
+
+    return [
+      {
+        id: item.id,
+        ...guidance,
+        ...(guidance.preserveInlineCodeSpans
+          ? {
+              inlineCodeRule:
+                "Do not move words across code spans. Keep text in the same slots before, between, and after the inline code.",
+            }
+          : {}),
+      },
+    ];
+  });
+}
+
+function createRetryItemChecklist(
+  task: TranslationTaskFile,
+  previousResponse: string | undefined,
+  verificationIssues: TranslationVerificationIssue[],
+): Array<Record<string, unknown>> {
+  if (verificationIssues.length === 0) {
+    return [];
+  }
+
+  const previousDraft = parsePreviousDraft(previousResponse);
+  const taskItemsById = new Map(task.content.map((item) => [item.id, item]));
+  const entries = new Map<string, RetryPromptEntry>();
+
+  verificationIssues.forEach((issue) => {
+    if (
+      appendRetryEntryForResponseIndex(
+        entries,
+        task,
+        taskItemsById,
+        previousDraft,
+        issue,
+      )
+    ) {
+      return;
+    }
+
+    if (issue.code === "id_missing") {
+      appendMissingTaskEntries(entries, taskItemsById, issue);
+      return;
+    }
+
+    if (issue.code === "id_unknown") {
+      appendUnknownIdEntries(
+        entries,
+        task,
+        taskItemsById,
+        previousDraft,
+        issue,
+      );
+    }
+  });
+
+  return [...entries.values()];
+}
+
+function createProtectedTextGuidance(
+  item: TranslationTaskFile["content"][number],
+): ProtectedTextGuidance {
+  const inlineCode = parseInlineCodeSpans(item.text);
+  const placeholders = extractPlaceholderTokens(item.text);
+
+  return {
+    ...(placeholders.length > 0
+      ? {
+          preservePlaceholders: placeholders,
+        }
+      : {}),
+    ...(inlineCode && inlineCode.inlineCodeSpans.length > 0
+      ? {
+          preserveInlineCodeSpans: inlineCode.inlineCodeSpans,
+          inlineCodeTextSlotLayout:
+            inlineCode.textSegments.map(describeTextSlot),
+        }
+      : {}),
+    ...(item.note
+      ? {
+          note: item.note,
+        }
+      : {}),
+  };
+}
+
+function hasProtectedTextGuidance(guidance: ProtectedTextGuidance): boolean {
+  return Boolean(
+    guidance.preservePlaceholders?.length ||
+    guidance.preserveInlineCodeSpans?.length,
+  );
+}
+
+function appendRetryEntryForResponseIndex(
+  entries: Map<string, RetryPromptEntry>,
+  task: TranslationTaskFile,
+  taskItemsById: Map<string, TranslationTaskFile["content"][number]>,
+  previousDraft: RetryDraftSnapshot | null,
+  issue: TranslationVerificationIssue,
+): boolean {
+  const responseIndex = extractResponseIndex(issue.jsonPath);
+  const responseItem =
+    responseIndex === null
+      ? undefined
+      : previousDraft?.translations[responseIndex];
+  if (responseIndex === null || !responseItem) {
+    return false;
+  }
+
+  const expectedTaskItem = task.content[responseIndex];
+  const actualTaskItem = taskItemsById.get(responseItem.id);
+  const entryKey = `response:${responseIndex}`;
+  const existingEntry = entries.get(entryKey);
+
+  if (existingEntry) {
+    appendValidationError(existingEntry, issue.message);
+    return true;
+  }
+
+  const entry: RetryPromptEntry = {
+    responseIndex: responseIndex + 1,
+    actualResponseId: responseItem.id,
+    ...(expectedTaskItem
+      ? {
+          expectedTaskIdAtPosition: expectedTaskItem.id,
+        }
+      : {}),
+    ...(actualTaskItem
+      ? {
+          sourceText: actualTaskItem.text,
+          ...createProtectedTextGuidance(actualTaskItem),
+        }
+      : {}),
+    ...(expectedTaskItem &&
+    (!actualTaskItem || expectedTaskItem.id !== actualTaskItem.id)
+      ? {
+          expectedSourceTextAtPosition: expectedTaskItem.text,
+        }
+      : {}),
+    currentTranslatedText: responseItem.translatedText,
+    validationErrors: [issue.message],
+  };
+  entries.set(entryKey, entry);
+  return true;
+}
+
+function appendMissingTaskEntries(
+  entries: Map<string, RetryPromptEntry>,
+  taskItemsById: Map<string, TranslationTaskFile["content"][number]>,
+  issue: TranslationVerificationIssue,
+): void {
+  extractQuotedValues(issue.message).forEach((id) => {
+    const taskItem = taskItemsById.get(id);
+    if (!taskItem) {
+      return;
+    }
+
+    const entryKey = `missing:${id}`;
+    const existingEntry = entries.get(entryKey);
+    if (existingEntry) {
+      appendValidationError(existingEntry, issue.message);
+      return;
+    }
+
+    entries.set(entryKey, {
+      missingTaskId: id,
+      sourceText: taskItem.text,
+      ...createProtectedTextGuidance(taskItem),
+      validationErrors: [issue.message],
+    });
+  });
+}
+
+function appendUnknownIdEntries(
+  entries: Map<string, RetryPromptEntry>,
+  task: TranslationTaskFile,
+  taskItemsById: Map<string, TranslationTaskFile["content"][number]>,
+  previousDraft: RetryDraftSnapshot | null,
+  issue: TranslationVerificationIssue,
+): void {
+  if (!previousDraft) {
+    return;
+  }
+
+  extractQuotedValues(issue.message).forEach((id) => {
+    previousDraft.translations.forEach((translation, index) => {
+      if (translation.id !== id) {
+        return;
+      }
+
+      appendRetryEntryForResponseIndex(
+        entries,
+        task,
+        taskItemsById,
+        previousDraft,
+        {
+          ...issue,
+          jsonPath: `$.translations[${index}].id`,
+        },
+      );
+    });
+  });
+}
+
+function appendValidationError(entry: RetryPromptEntry, message: string): void {
+  if (entry.validationErrors.includes(message)) {
+    return;
+  }
+
+  entry.validationErrors.push(message);
+}
+
+function parsePreviousDraft(
+  previousResponse: string | undefined,
+): RetryDraftSnapshot | null {
+  if (!previousResponse) {
+    return null;
+  }
+
+  try {
+    const parsed = parseJsonResponse(previousResponse);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    const translations = Array.isArray(
+      (parsed as { translations?: unknown }).translations,
+    )
+      ? (parsed as { translations: unknown[] }).translations.flatMap(
+          (translation) => {
+            if (!translation || typeof translation !== "object") {
+              return [];
+            }
+
+            const id = (translation as { id?: unknown }).id;
+            const translatedText = (translation as { translatedText?: unknown })
+              .translatedText;
+            if (typeof id !== "string" || typeof translatedText !== "string") {
+              return [];
+            }
+
+            return [
+              {
+                id,
+                translatedText,
+              },
+            ];
+          },
+        )
+      : [];
+    if (translations.length === 0) {
+      return null;
+    }
+
+    return {
+      translations,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractResponseIndex(jsonPath: string): number | null {
+  const match = jsonPath.match(/^\$\.translations\[(\d+)\]/u);
+  return match ? Number(match[1]) : null;
+}
+
+function extractQuotedValues(message: string): string[] {
+  return [...message.matchAll(/"([^"]+)"/gu)].map((match) => match[1] ?? "");
+}
+
+function describeTextSlot(value: string): "text" | "empty" {
+  return value.trim().length > 0 ? "text" : "empty";
 }
 
 function looksLikeJsonModeCompatibilityError(error: unknown): boolean {
