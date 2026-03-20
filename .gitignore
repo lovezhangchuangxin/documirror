@@ -9,3 +9,7 @@ reports
 .documirror/cache
 .documirror/tasks
 .documirror/state/checkpoints
+
+.codex
+.claude
+.omc
