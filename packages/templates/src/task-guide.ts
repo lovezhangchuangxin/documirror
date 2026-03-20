@@ -1,57 +1,47 @@
 export function createTaskGuide(): string {
-  return `# DocuMirror Agent Translation Workflow
+  return `# DocuMirror API Translation Workflow
 
-This document is the operating guide for external agents that translate DocuMirror task files.
+This document is the operating guide for automatic API translation and manual result review.
 
 ## Source Of Truth
 
 - \`.documirror/tasks/manifest.json\` is the machine-readable task state
-- \`.documirror/tasks/QUEUE.md\` is the generated checklist view for agents
+- \`.documirror/tasks/QUEUE.md\` is the generated checklist view
 - Do **NOT** edit either file by hand
 
 ## Standard Workflow
 
-1. Claim the next task:
+1. Generate translation tasks:
 
 \`\`\`bash
-documirror translate claim --repo . --worker <agent-name>
+documirror translate plan --repo .
 \`\`\`
 
-Expired task leases are reclaimed automatically before claim selects the next task.
-
-If you need a specific task:
+2. Run automatic translation:
 
 \`\`\`bash
-documirror translate claim --repo . --task <taskId>
+documirror translate run --repo .
 \`\`\`
 
-2. Read the claimed task file from \`.documirror/tasks/pending/<taskId>.json\`
-3. Fill the draft result scaffold at \`.documirror/tasks/in-progress/<taskId>.result.json\`
-4. Verify the draft:
+   If a run looks stuck, rerun it with debug logs enabled:
+
+\`\`\`bash
+documirror translate run --repo . --debug
+\`\`\`
+
+3. Verify a generated result if needed:
 
 \`\`\`bash
 documirror translate verify --repo . --task <taskId>
 \`\`\`
 
-5. Fix every reported error and run verify again until it passes
-6. Finalize the verified draft into \`.documirror/tasks/done/\`:
-
-\`\`\`bash
-documirror translate complete --repo . --task <taskId> --provider <agent-name>
-\`\`\`
-
-7. After all queued tasks are complete, apply results:
+4. Apply verified results:
 
 \`\`\`bash
 documirror translate apply --repo .
 \`\`\`
 
-If an agent stops or a lease expires, return the task to the queue:
-
-\`\`\`bash
-documirror translate release --repo . --task <taskId>
-documirror translate reclaim-expired --repo .
-\`\`\`
+If automatic translation fails for a task, inspect \`reports/translation-run/<taskId>.json\`, adjust the AI config or prompt inputs, then rerun \`translate run\`. Use \`--debug\` when you need to see whether it is blocked on task loading, the API request, first streamed content, response parsing, validation, or retry handling.
 
 ## Translation Rules (MUST Follow)
 
@@ -82,15 +72,18 @@ documirror translate reclaim-expired --repo .
 
 ### 6. Queue Discipline
 - Do not edit \`.documirror/tasks/manifest.json\` or \`.documirror/tasks/QUEUE.md\`
-- One task lease belongs to one worker
-- Release or reclaim stuck tasks instead of leaving them in progress
+- Keep provider tokens in \`.env\`
+- Rerun \`translate run\` instead of inventing ad hoc side channels
 
-## Draft Result Schema
+## Result Schema
 
 \`\`\`json
 {
   "schemaVersion": 2,
   "taskId": "task_xxx",
+  "provider": "openai",
+  "model": "gpt-4.1-mini",
+  "completedAt": "2026-03-20T12:00:00.000Z",
   "translations": [
     {
       "id": "1",
@@ -104,8 +97,6 @@ documirror translate reclaim-expired --repo .
 }
 \`\`\`
 
-The \`complete\` command will fill \`provider\` and \`completedAt\` into the final result file.
-
 ## What Verify Checks
 
 - \`taskId\` matches the claimed task
@@ -118,8 +109,6 @@ The \`complete\` command will fill \`provider\` and \`completedAt\` into the fin
 - placeholders such as \`{name}\`, \`{{value}}\`, \`%s\`, and \`<0>\` are preserved exactly
 - lightweight markdown structures such as \`**bold**\`, \`~~strike~~\`, and \`[text](url)\` are preserved
 - inline code spans are preserved for inline-code tasks
-- expired task claims fail verification until the task is reclaimed
-
 Verify may also warn when a translation is effectively identical to the source text.
 
 ## Example Fixes

@@ -11,7 +11,7 @@ This repository stores the translated mirror workflow for:
 
 Use this repository to crawl the source docs site, translate queued task files, and build a deployable translated static mirror.
 
-Detailed agent and repository rules live in \`AGENTS.md\`. Translation-task-specific instructions live in \`.documirror/TASKS.md\`.
+Detailed repository rules live in \`AGENTS.md\`. Translation-task-specific instructions live in \`.documirror/TASKS.md\`.
 
 ## Requirements
 
@@ -34,19 +34,22 @@ Refresh source state and generate translation tasks:
 pnpm documirror:update
 \`\`\`
 
-Claim the next translation task:
+Run automatic translation:
 
 \`\`\`bash
-pnpm documirror:translate:claim -- --worker <agent-name>
+pnpm documirror:translate:run
 \`\`\`
 
-When a \`pnpm documirror:*\` script needs extra CLI flags such as \`--worker\`, \`--task\`, or \`--provider\`, keep the extra \`--\` so pnpm forwards those flags to the DocuMirror CLI.
+Debug a slow or stuck translation run:
 
-Verify and finalize the claimed result:
+\`\`\`bash
+pnpm documirror:translate:run -- --debug
+\`\`\`
+
+Verify a generated result if needed:
 
 \`\`\`bash
 pnpm documirror:translate:verify -- --task <taskId>
-pnpm documirror:translate:complete -- --task <taskId> --provider <agent-name>
 \`\`\`
 
 Apply verified translations and build the site:
@@ -70,14 +73,9 @@ Run pipeline steps individually:
 \`\`\`bash
 pnpm documirror:crawl
 pnpm documirror:extract
+pnpm documirror:config:ai
 pnpm documirror:translate:plan
-\`\`\`
-
-If a worker stops, release or reclaim a task:
-
-\`\`\`bash
-pnpm documirror:translate:release -- --task <taskId>
-pnpm documirror:translate:reclaim-expired
+pnpm documirror:translate:run
 \`\`\`
 `;
 }

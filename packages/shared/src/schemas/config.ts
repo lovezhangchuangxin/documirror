@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 import {
+  DEFAULT_AI_AUTH_TOKEN_ENV_VAR,
+  DEFAULT_AI_CONCURRENCY,
+  DEFAULT_AI_MAX_ATTEMPTS_PER_TASK,
+  DEFAULT_AI_REQUEST_TIMEOUT_MS,
+  DEFAULT_AI_TEMPERATURE,
   DEFAULT_CRAWL_CONCURRENCY,
   DEFAULT_REQUEST_RETRY_COUNT,
   DEFAULT_REQUEST_RETRY_DELAY_MS,
@@ -14,6 +19,32 @@ export const selectorRulesSchema = z.object({
 
 export const buildConfigSchema = z.object({
   basePath: z.string().default("/"),
+});
+
+export const mirrorAiConfigSchema = z.object({
+  providerKind: z.literal("openai-compatible").default("openai-compatible"),
+  llmProvider: z.string().trim().min(1).default("openai"),
+  baseUrl: z.url(),
+  modelName: z.string().trim().min(1),
+  authTokenEnvVar: z
+    .string()
+    .trim()
+    .min(1)
+    .default(DEFAULT_AI_AUTH_TOKEN_ENV_VAR),
+  concurrency: z.number().int().min(1).max(32).default(DEFAULT_AI_CONCURRENCY),
+  requestTimeoutMs: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(300_000)
+    .default(DEFAULT_AI_REQUEST_TIMEOUT_MS),
+  maxAttemptsPerTask: z
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .default(DEFAULT_AI_MAX_ATTEMPTS_PER_TASK),
+  temperature: z.number().min(0).max(2).default(DEFAULT_AI_TEMPERATURE),
 });
 
 export const mirrorConfigSchema = z.object({
@@ -65,6 +96,18 @@ export const mirrorConfigSchema = z.object({
   build: buildConfigSchema.default({
     basePath: "/",
   }),
+  ai: mirrorAiConfigSchema.default({
+    providerKind: "openai-compatible",
+    llmProvider: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    modelName: "gpt-4.1-mini",
+    authTokenEnvVar: DEFAULT_AI_AUTH_TOKEN_ENV_VAR,
+    concurrency: DEFAULT_AI_CONCURRENCY,
+    requestTimeoutMs: DEFAULT_AI_REQUEST_TIMEOUT_MS,
+    maxAttemptsPerTask: DEFAULT_AI_MAX_ATTEMPTS_PER_TASK,
+    temperature: DEFAULT_AI_TEMPERATURE,
+  }),
 });
 
 export type MirrorConfig = z.infer<typeof mirrorConfigSchema>;
+export type MirrorAiConfig = z.infer<typeof mirrorAiConfigSchema>;

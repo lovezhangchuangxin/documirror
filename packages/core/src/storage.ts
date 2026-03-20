@@ -35,6 +35,7 @@ export async function ensureRepoStructure(paths: RepoPaths): Promise<void> {
     fs.ensureDir(paths.tasksInProgressDir),
     fs.ensureDir(paths.tasksDoneDir),
     fs.ensureDir(paths.tasksAppliedDir),
+    fs.ensureDir(paths.tasksAppliedHistoryDir),
     fs.ensureDir(paths.reportsDir),
   ]);
 }

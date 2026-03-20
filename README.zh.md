@@ -1,82 +1,83 @@
 # DocuMirror
 
-[English README](./README.md)
+[English](./README.md)
 
-DocuMirror 是一个用于构建静态文档站翻译镜像的 TypeScript monorepo。
+DocuMirror 是一个 TypeScript monorepo，用来构建静态文档站的翻译镜像。
 
-它会抓取源文档站，抽取 HTML 中可翻译的文本和属性，导出给外部 AI agent（如 Claude Code、Codex）处理的任务文件，再把翻译结果重新装配回 HTML，最终生成可部署的静态镜像站。
+它会抓取源文档站，抽取 HTML 中可翻译的文本和属性，生成按页面组织的翻译任务文件，直接调用 OpenAI 兼容 API 自动翻译，校验结果，然后把翻译内容重新装配回 HTML，最终生成可部署的静态镜像站。
 
-仓库规范和协作约定集中放在 [AGENTS.md](./AGENTS.md)。
+仓库约定与贡献规则见 [AGENTS.md](./AGENTS.md)。
 
-## 项目概览
+## 概览
 
-DocuMirror 面向这样一类需求：
+DocuMirror 适合需要这些能力的文档团队：
 
-- 保留原始站点结构与 URL
-- 拥有可重复执行的翻译流水线
-- 支持增量更新，而不是每次整站重翻
-- 使用可检查、可脚本化的文件状态
+- 保留原站结构与 URL
+- 做增量更新而不是整站重翻
+- 使用易于检查的文件状态
+- 直接通过 API 自动翻译，而不是手动管理 agent 队列
 
-当前仓库已经提供可运行的 v0.1 基础能力：
+当前仓库提供：
 
-- 提供 `init`、`crawl`、`extract`、`translate plan`、`translate claim`、`translate release`、`translate reclaim-expired`、`translate verify`、`translate complete`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
-- 使用 `pnpm workspace` 组织 crawler、parser、i18n、builder、CLI 等独立包
+- `init`、`config ai`、`crawl`、`extract`、`translate plan`、`translate run`、`translate verify`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
+- 基于 `pnpm` workspace 的 crawler、parser、i18n、builder、OpenAI adapter、CLI 拆包结构
 - 基于 `sourceHash` 的 segment 级增量翻译规划
-- 面向外部 agent 的按页面任务装配与短序号内容项
-- 通过文件队列适配第三方翻译 agent
-- 在 `.documirror/` 下使用本地 JSON/JSONL 状态
+- 按页面打包的任务文件与短 ID
+- 基于 `openai` npm 包、面向 OpenAI 兼容接口的并发自动翻译
+- 保存在 `.documirror/` 下的本地 JSON/JSONL 状态
 
 ## 当前范围
 
 当前实现刻意保持收敛：
 
-- 面向公开可访问、以静态 HTML 为主的文档站
-- 一个镜像仓库对应一个源站
-- 一个镜像仓库对应一个目标语言
-- 仅支持文件式翻译工作流
+- 面向公开、以静态 HTML 为主的文档站
+- 一个镜像仓库只对应一个源站
+- 一个镜像仓库只对应一个目标语言
+- 一个镜像仓库只配置一个 LLM 接口
+- 文件式翻译工作流
 
-当前不支持：
+暂不支持：
 
 - 需要登录的站点
-- 大量依赖前端运行时的 SPA 渲染
-- 内置直接调用 Claude Code、Codex 等 CLI
-- 单仓库多目标语言
+- 强依赖前端渲染的 SPA
+- 一个仓库同时管理多语言
+- OpenAI 兼容 chat completions 之外的 provider 专用能力
 
-## 工作流
+## 流水线
 
-完整流程如下：
+端到端流程如下：
 
 1. `init`
-   初始化镜像仓库及其 `.documirror/` 工作目录。
-   重复执行 `init` 时，只会补齐缺失脚手架，不会覆盖已有状态。
+   交互式创建镜像仓库、写入 `.documirror/` 工作目录、采集 AI 配置，并把 token 写入 `.env`
 2. `crawl`
-   抓取源站页面和静态资源。
+   抓取源站页面和静态资源
 3. `extract`
-   解析 HTML，生成可翻译 segment 和 DOM 装配映射。
+   解析 HTML，生成可翻译 segment 与 DOM 装配映射
 4. `translate plan`
-   仅为新增、过期或缺失翻译的内容导出任务 JSON，并刷新任务清单与看板。
-5. `translate claim` / `translate release` / `translate reclaim-expired` / `translate verify` / `translate complete`
-   按任务领取、填写草稿结果、执行校验，并把通过校验的结果放入 done 队列。
+   仅为新增、过期或缺失 accepted 翻译的 segment 生成任务文件，并刷新任务清单
+5. `translate run`
+   并发调用配置好的 OpenAI 兼容 API，自动校验模型输出，并把通过校验的结果写入 `tasks/done/`。如果运行看起来卡住，可以加 `--debug` 输出每个 task 的请求阶段日志
 6. `translate apply`
-   校验并导入可接受的翻译结果。
+   再次校验并把结果导入翻译存储
 7. `build`
-   将翻译内容重新写回 HTML，并在 `site/` 下生成静态镜像站。
+   把翻译内容重新写回 HTML，在 `site/` 下输出镜像站
 
-若源站更新，可以先执行 `update`，再重复翻译、导入与构建步骤。
+增量更新时，运行 `update`，然后按需重复翻译、应用和构建。
 
 ## 仓库结构
 
 ```text
 .
 ├── packages/
-│   ├── adapters-filequeue/  # 任务文件导入导出
+│   ├── adapters-filequeue/  # 任务文件导入导出辅助
+│   ├── adapters-openai/     # OpenAI 兼容 API 适配层
 │   ├── cli/                 # 命令行入口
 │   ├── core/                # 编排与仓库状态
 │   ├── crawler/             # 站点抓取与资源发现
 │   ├── i18n/                # 翻译状态与增量逻辑
 │   ├── parser/              # HTML 抽取与装配映射
-│   ├── shared/              # 公共 schema、类型与工具
-│   ├── site-builder/        # 翻译后站点输出
+│   ├── shared/              # 共享 schema、类型与工具
+│   ├── site-builder/        # 翻译站点输出
 │   └── templates/           # init 模板与任务说明
 ├── AGENTS.md
 ├── README.md
@@ -84,33 +85,37 @@ DocuMirror 面向这样一类需求：
 └── package.json
 ```
 
-执行 `init` 后，镜像仓库的工作目录结构如下：
+执行 `init` 后，镜像仓库结构大致如下：
 
 ```text
-.documirror/
-├── TASKS.md
-├── config.json
-├── glossary.json
-├── cache/
-│   ├── assets/
-│   └── pages/
-├── content/
-│   ├── segments.jsonl
-│   └── translations.jsonl
-├── state/
-│   ├── assembly.json
-│   ├── manifest.json
-│   └── task-mappings/
-└── tasks/
-    ├── applied/
-    ├── done/
-    ├── in-progress/
-    ├── manifest.json
-    ├── pending/
-    └── QUEUE.md
+.
+├── .env
+├── .documirror/
+│   ├── TASKS.md
+│   ├── config.json
+│   ├── glossary.json
+│   ├── cache/
+│   │   ├── assets/
+│   │   └── pages/
+│   ├── content/
+│   │   ├── segments.jsonl
+│   │   └── translations.jsonl
+│   ├── state/
+│   │   ├── assembly.json
+│   │   ├── manifest.json
+│   │   └── task-mappings/
+│   └── tasks/
+│       ├── applied/
+│       ├── done/
+│       ├── manifest.json
+│       ├── pending/
+│       └── QUEUE.md
+├── AGENTS.md
+├── README.md
+└── package.json
 ```
 
-## 环境要求
+## 要求
 
 - Node.js `>= 20`
 - `pnpm` `10.x`
@@ -129,7 +134,7 @@ pnpm install
 pnpm build
 ```
 
-运行验证：
+运行校验：
 
 ```bash
 pnpm lint
@@ -143,23 +148,18 @@ pnpm test
 node packages/cli/dist/index.mjs --help
 ```
 
-如需本地全局安装 CLI 进行调试，可执行：
-
-```bash
-pnpm build
-cd packages/cli
-pnpm link --global
-documirror --help
-```
-
-链接后的 `documirror` 命令会指向 `packages/cli/dist/index.mjs`，因此修改 CLI 代码后需要先重新构建再执行。
-
 ## CLI 快速开始
 
-初始化镜像仓库：
+交互式初始化镜像仓库：
 
 ```bash
-node packages/cli/dist/index.mjs init https://docs.example.com --locale zh-CN --dir ./my-mirror
+node packages/cli/dist/index.mjs init --repo ./my-mirror
+```
+
+后续修改 AI 配置：
+
+```bash
+node packages/cli/dist/index.mjs config ai --repo ./my-mirror
 ```
 
 抓取源站：
@@ -180,26 +180,22 @@ node packages/cli/dist/index.mjs extract --repo ./my-mirror
 node packages/cli/dist/index.mjs translate plan --repo ./my-mirror
 ```
 
-领取下一个翻译任务：
+运行自动翻译：
 
 ```bash
-node packages/cli/dist/index.mjs translate claim --repo ./my-mirror --worker codex-01
+node packages/cli/dist/index.mjs translate run --repo ./my-mirror
 ```
 
-`claim` 在选择下一个任务前，会自动回收已经过期的 lease。
-
-释放或回收任务：
+调试耗时过长或看起来卡住的翻译运行：
 
 ```bash
-node packages/cli/dist/index.mjs translate release --repo ./my-mirror --task <taskId>
-node packages/cli/dist/index.mjs translate reclaim-expired --repo ./my-mirror
+node packages/cli/dist/index.mjs translate run --repo ./my-mirror --debug
 ```
 
-校验并完成一个已领取任务：
+如需检查生成结果，可单独校验：
 
 ```bash
 node packages/cli/dist/index.mjs translate verify --repo ./my-mirror --task <taskId>
-node packages/cli/dist/index.mjs translate complete --repo ./my-mirror --task <taskId> --provider codex
 ```
 
 导入翻译结果：
@@ -208,179 +204,105 @@ node packages/cli/dist/index.mjs translate complete --repo ./my-mirror --task <t
 node packages/cli/dist/index.mjs translate apply --repo ./my-mirror
 ```
 
-构建翻译镜像站：
+构建翻译镜像：
 
 ```bash
 node packages/cli/dist/index.mjs build --repo ./my-mirror
 ```
 
-执行增量更新：
+运行增量流水线：
 
 ```bash
 node packages/cli/dist/index.mjs update --repo ./my-mirror
 ```
 
-检查仓库状态与健康度：
+检查仓库健康状态：
 
 ```bash
 node packages/cli/dist/index.mjs doctor --repo ./my-mirror
 node packages/cli/dist/index.mjs status --repo ./my-mirror
 ```
 
-## Crawl 行为
+## AI 配置
 
-crawler 相关设置位于 `.documirror/config.json`。
+镜像仓库的 AI 配置保存在：
 
-- `crawlConcurrency` 现在表示页面和资源合并后的总 HTTP 并发，而不是分别计算。
-- `requestTimeoutMs`、`requestRetryCount`、`requestRetryDelayMs` 用于控制单次请求超时和瞬时失败时的有限重试。
-- `crawl` 结束后会输出摘要，包括重试次数、`robots.txt` 跳过或降级、忽略的非法链接以及部分失败样本，而不是直接暴露原始请求栈。
-- 如果入口页面全部抓取失败，或全部被 `robots.txt` 阻止，且最终没有任何缓存文件产出，命令会以更友好的错误信息退出。
-
-常见 crawler 配置如下：
-
-```json
-{
-  "crawlConcurrency": 4,
-  "requestTimeoutMs": 15000,
-  "requestRetryCount": 2,
-  "requestRetryDelayMs": 500
-}
+```text
+.documirror/config.json
 ```
 
-## 翻译任务工作流
+认证 token 保存在：
 
-当前 v0.1 不直接调用外部 AI 工具，而是通过文件与它们交换任务和结果。
+```text
+.env
+```
 
-待处理任务会写入：
+当前 AI 配置字段包括：
+
+- `llmProvider`
+- `baseUrl`
+- `modelName`
+- `authTokenEnvVar`
+- `concurrency`
+- `requestTimeoutMs`
+- `maxAttemptsPerTask`
+- `temperature`
+
+`init` 和 `config ai` 在保存前都会先做一次真实连通性测试。
+
+## 翻译工作流
+
+待处理任务写入：
 
 ```text
 .documirror/tasks/pending/
 ```
 
-任务状态还会写入：
+任务状态也会写入：
 
 ```text
 .documirror/tasks/manifest.json
 .documirror/tasks/QUEUE.md
 ```
 
-推荐的 agent 流程：
-
-1. 执行 `translate claim --worker <agent-name>`
-2. 读取 `.documirror/tasks/pending/` 下的任务 JSON
-3. 在 `.documirror/tasks/in-progress/` 下填写草稿结果
-4. 执行 `translate verify`
-5. 根据错误提示修正，直到校验通过
-6. 执行 `translate complete`
-7. 如果 worker 中断，执行 `translate release` 或 `translate reclaim-expired`
-8. 全部任务完成后执行 `translate apply`
-
-每个任务 JSON 包含：
-
-- 目标语言
-- 翻译说明
-- glossary 条目
-- 页面 URL 和标题
-- 按页面阅读顺序排列的短序号内容项
-- 原文，以及仅在必要时出现的简短上下文说明
-- 用反引号包裹的内联代码，用于在保留术语的同时提供完整句子上下文
-- 为了保证被 inline code 打断的句子连贯，任务项中可能会带上相邻但未变更的文本
-
-草稿结果写入：
-
-```text
-.documirror/tasks/in-progress/
-```
-
-通过校验后的正式结果写入：
+通过校验的结果写入：
 
 ```text
 .documirror/tasks/done/
 ```
 
-草稿结果文件必须包含：
+已应用历史归档到：
 
-- `taskId`
-- 以任务短序号 `id` 对齐的翻译结果
+```text
+.documirror/tasks/applied/
+```
 
-`translate verify` 会检查：
+每个 task JSON 包含：
 
-- 当前任务 lease 是否已经过期
-- `translations.length === content.length`
-- `translations[].id` 是否严格按 `1..N`
-- 是否缺失、重复或出现多余 id
-- 是否存在空的 `translatedText`
-- `1.`、`-`、`- [ ]` 这类前导列表标记是否被保留
-- 当命中 glossary 词条时，译文是否包含对应 target
-- `{name}`、`{{value}}`、`%s`、`<0>` 这类 placeholder 是否被原样保留
-- `**bold**`、`~~strike~~`、`[text](url)` 这类轻量 markdown 结构是否被保留
-- inline code 是否按顺序保留
+- 任务元数据
+- 页面 URL 与可选标题
+- glossary 条目
+- 以 `1`、`2`、`3` 这类短 ID 编号的翻译项
 
-如果译文与原文几乎完全一致，`verify` 还会给出 warning，提示人工确认。
-
-`translate complete` 会写出正式结果文件，包含：
+结果文件包含：
 
 - `taskId`
 - `provider`
+- `model`
 - `completedAt`
-- 以任务短序号 `id` 对齐的翻译结果
+- 按短 ID 对应的译文项
 
-`translate apply` 会先把短序号 `id` 映射回内部 `segmentId` 和 `sourceHash`，再校验结果 schema，并且只接受 `sourceHash` 仍与当前源文本一致的翻译。
-当任务内容中出现像 `` `snap-always` `` 这样的内联代码时，结果文本必须按原样保留这些 code span 及其顺序，DocuMirror 才能把整句译文重新拆回原始 inline code 两侧的文本节点。
+`translate run` 会把 task、glossary 和校验错误一起喂给模型，在模型输出 JSON 非法或校验失败时自动重试修复。现在会优先使用流式 chat completion，在 provider 不支持时自动回退到非流式，并把默认 AI 请求超时提高到更适合大任务的级别。加上 `--debug` 后，还会输出 task 加载、请求发起、首个流式内容到达、响应完成、校验重试和结果写入这些阶段日志。`translate apply` 会把短 ID 映射回内部 `segmentId` 和 `sourceHash`，再次校验 schema，并且只接受 `sourceHash` 仍与当前源内容一致的翻译。
 
-## 增量翻译模型
+当 task 中包含 `` `snap-always` `` 这类内联代码时，结果文本必须保留相同的 inline code span 与顺序，DocuMirror 才能把译文正确拆回原始 DOM 结构。
 
-增量更新是按 segment，而不是按页面进行的：
+## 增量行为
 
-- 每个抽取出的 segment 都有稳定的 `segmentId`
-- 每个 segment 还会生成一个页面内的 `reuseKey`，用于在 DOM 路径变化时安全复用既有翻译
-- 每段归一化后的源文本都会生成 `sourceHash`
-- 当 `sourceHash` 变化时，旧翻译会变为 stale
-- 下一次翻译规划只会导出新增、过期或缺失已接受翻译的 segment
-- 如果 segment 只是同页内位置变化，但 `reuseKey` 唯一且 `sourceHash` 未变，DocuMirror 会自动继承已接受译文
-- 对应当前内容的 `.documirror/tasks/pending/` 兼容页面任务会在重复规划时保留
-
-这样当源站只改动少量内容时，翻译成本不会膨胀到整页级别。
-
-## 当前抽取范围
-
-当前 parser 主要覆盖：
-
-- 常规 HTML 内容中的文本节点
-- 常见可翻译属性，如 `title`、`alt`、`aria-label`、`placeholder`
-- 部分 SEO/meta 内容，如 `description` 和 `og:*` 标题/描述字段
-
-默认会跳过：
-
-- `script`
-- `style`
-- `noscript`
-- `pre`
-- `code`
-
-相关 selector 和 attribute 规则配置在 `.documirror/config.json` 中。
-
-## 设计原则
-
-当前实现有几个明确取舍：
-
-- 使用文件状态，而不是数据库
-- 使用文件任务队列，而不是直接耦合外部工具
-- 先支持静态 HTML，浏览器自动化留待后续
-- 工作区保持 ESM-only
-
-这些取舍让第一版更容易检查、自动化和渐进演进。
-
-## 后续方向
-
-后续较自然的迭代包括：
-
-- 增加 Docusaurus、VitePress、MkDocs 等站点 profile
-- 加强 placeholder 和内联标记保护
-- 改进资源与内部链接归一化
-- 提供更详细的健康度报告
-- 增加外部翻译 CLI 的可选直接适配器
+- `translate plan` 只导出新增、过期或缺失 accepted 翻译的 segment
+- 重复执行 plan 时，会保留仍然兼容的 pending task
+- `translate run` 对失败任务保留 `pending/` 状态，并把诊断信息写入 `reports/translation-run/`
+- `translate apply` 会拒绝源内容已变化的 stale 结果
 
 ## License
 
-当前仓库还没有添加许可证。
+MIT

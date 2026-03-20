@@ -17,15 +17,13 @@ export function createMirrorRepoPackageJson(
       node: ">=20",
     },
     scripts: {
+      "documirror:init": "documirror init --repo .",
       "documirror:crawl": "documirror crawl --repo .",
       "documirror:extract": "documirror extract --repo .",
+      "documirror:config:ai": "documirror config ai --repo .",
       "documirror:translate:plan": "documirror translate plan --repo .",
-      "documirror:translate:claim": "documirror translate claim --repo .",
-      "documirror:translate:release": "documirror translate release --repo .",
-      "documirror:translate:reclaim-expired":
-        "documirror translate reclaim-expired --repo .",
+      "documirror:translate:run": "documirror translate run --repo .",
       "documirror:translate:verify": "documirror translate verify --repo .",
-      "documirror:translate:complete": "documirror translate complete --repo .",
       "documirror:translate:apply": "documirror translate apply --repo .",
       "documirror:build": "documirror build --repo .",
       "documirror:update": "documirror update --repo .",

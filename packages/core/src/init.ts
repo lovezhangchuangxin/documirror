@@ -10,14 +10,19 @@ import {
 } from "@documirror/shared";
 import {
   createDefaultConfig,
+  createDefaultAiConfig,
   createMirrorRepoAgents,
-  createMirrorRepoClaude,
   createMirrorRepoPackageJson,
   createMirrorRepoReadme,
   createTaskGuide,
   createTaskQueuePlaceholder,
 } from "@documirror/templates";
 
+import {
+  ensureGitIgnoreEntry,
+  upsertEnvVar,
+  writeEnvTemplateIfMissing,
+} from "./ai-config";
 import { getRepoPaths } from "./repo-paths";
 import {
   writeScaffoldJsonIfMissing,
@@ -30,14 +35,18 @@ import type { InitOptions } from "./types";
 export async function initMirrorRepository(
   options: InitOptions,
 ): Promise<void> {
-  const { repoDir, siteUrl, targetLocale } = options;
+  const { repoDir, siteUrl, targetLocale, authToken = "" } = options;
   const logger = options.logger ?? defaultLogger;
   const paths = getRepoPaths(repoDir);
 
   await ensureRepoStructure(paths);
 
   const config = mirrorConfigSchema.parse(
-    createDefaultConfig(siteUrl, targetLocale),
+    createDefaultConfig(
+      siteUrl,
+      targetLocale,
+      options.ai ?? createDefaultAiConfig(),
+    ),
   );
   const manifest: Manifest = manifestSchema.parse({
     sourceUrl: config.sourceUrl,
@@ -61,7 +70,6 @@ export async function initMirrorRepository(
       summary: {
         total: 0,
         pending: 0,
-        inProgress: 0,
         done: 0,
         applied: 0,
         invalid: 0,
@@ -82,6 +90,13 @@ export async function initMirrorRepository(
     createTaskGuide(),
     logger,
   );
+  await writeEnvTemplateIfMissing(
+    paths.envPath,
+    config.ai.authTokenEnvVar,
+    logger,
+  );
+  await upsertEnvVar(paths.envPath, config.ai.authTokenEnvVar, authToken);
+  await ensureGitIgnoreEntry(paths.gitIgnorePath, ".env");
   await writeOrMergeScaffoldJson(
     join(repoDir, "package.json"),
     createMirrorRepoPackageJson(siteUrl, targetLocale),
@@ -95,11 +110,6 @@ export async function initMirrorRepository(
   await writeScaffoldTextIfMissing(
     join(repoDir, "AGENTS.md"),
     createMirrorRepoAgents(siteUrl, targetLocale),
-    logger,
-  );
-  await writeScaffoldTextIfMissing(
-    join(repoDir, "CLAUDE.md"),
-    createMirrorRepoClaude(),
     logger,
   );
   logger.info(`Initialized mirror repository in ${repoDir}`);

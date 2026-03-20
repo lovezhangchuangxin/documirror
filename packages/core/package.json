@@ -16,6 +16,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@documirror/adapters-openai": "workspace:*",
     "@documirror/adapters-filequeue": "workspace:*",
     "@documirror/crawler": "workspace:*",
     "@documirror/i18n": "workspace:*",

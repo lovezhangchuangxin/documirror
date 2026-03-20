@@ -1,8 +1,10 @@
-import type { MirrorConfig } from "@documirror/shared";
+import type { MirrorAiConfig, MirrorConfig } from "@documirror/shared";
+import { DEFAULT_AI_AUTH_TOKEN_ENV_VAR } from "@documirror/shared";
 
 export function createDefaultConfig(
   siteUrl: string,
   targetLocale: string,
+  ai: MirrorAiConfig,
 ): MirrorConfig {
   return {
     sourceUrl: siteUrl,
@@ -35,5 +37,20 @@ export function createDefaultConfig(
     build: {
       basePath: "/",
     },
+    ai,
+  };
+}
+
+export function createDefaultAiConfig(): MirrorAiConfig {
+  return {
+    providerKind: "openai-compatible",
+    llmProvider: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    modelName: "gpt-4.1-mini",
+    authTokenEnvVar: DEFAULT_AI_AUTH_TOKEN_ENV_VAR,
+    concurrency: 4,
+    requestTimeoutMs: 300_000,
+    maxAttemptsPerTask: 3,
+    temperature: 0.2,
   };
 }

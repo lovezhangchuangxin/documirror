@@ -1,28 +1,37 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import process from "node:process";
 
 import {
   applyTranslations,
   buildMirror,
-  claimTranslationTask,
-  completeTranslationTask,
   crawlMirror,
   doctorMirror,
   extractMirror,
   getMirrorStatus,
   initMirrorRepository,
-  planTranslations,
-  reclaimExpiredTranslationTasks,
-  releaseTranslationTask,
-  verifyTranslationTask,
+  runTranslations,
+  resolveAiAuthToken,
+  testAiConnection,
   updateMirror,
+  verifyTranslationTask,
+  planTranslations,
+  saveMirrorAiConfig,
 } from "@documirror/core";
-import type { Logger } from "@documirror/shared";
+import type { Logger, MirrorAiConfig, MirrorConfig } from "@documirror/shared";
+import { mirrorConfigSchema } from "@documirror/shared";
 import { Command } from "commander";
 import ora from "ora";
 import pc from "picocolors";
+import prompts from "prompts";
 
+import {
+  applyRunProgressEvent,
+  createRunProgressState,
+  formatRunProgressMessage,
+} from "./run-progress";
 import {
   formatCrawlOutput,
   formatFatalCrawlMessage,
@@ -40,20 +49,109 @@ program
 
 program
   .command("init")
-  .argument("<site-url>", "source documentation site url")
-  .requiredOption("--locale <locale>", "target locale, for example zh-CN")
-  .option("--dir <dir>", "target repository directory", process.cwd())
-  .action(async (siteUrl, options) => {
+  .option("--repo <dir>", "target repository directory", process.cwd())
+  .option("--site-url <url>", "source documentation site url")
+  .option("--locale <locale>", "target locale, for example zh-CN")
+  .option("--provider <provider>", "display name for the llm provider")
+  .option("--base-url <url>", "openai-compatible api base url")
+  .option("--model <model>", "model name")
+  .option("--auth-token <token>", "api auth token")
+  .option("--concurrency <count>", "translation concurrency", Number)
+  .action(async (options) => {
+    const initOptions = await collectInitOptions(options);
     await runWithSpinner(
       "Initializing mirror repository",
-      async ({ logger }) => {
+      async ({ logger, signal }) => {
+        const connection = await testAiConnection(
+          initOptions.ai,
+          initOptions.authToken,
+          signal,
+        );
+        if (!connection.ok) {
+          throw new Error(`AI connection test failed: ${connection.message}`);
+        }
+
         await initMirrorRepository({
-          repoDir: options.dir,
-          siteUrl,
-          targetLocale: options.locale,
+          repoDir: initOptions.repoDir,
+          siteUrl: initOptions.siteUrl,
+          targetLocale: initOptions.targetLocale,
+          ai: initOptions.ai,
+          authToken: initOptions.authToken,
           logger,
         });
-        return `Initialized ${options.dir}`;
+        return {
+          message: `Initialized ${initOptions.repoDir}`,
+          details: [
+            `source: ${initOptions.siteUrl}`,
+            `locale: ${initOptions.targetLocale}`,
+            `model: ${initOptions.ai.llmProvider}/${initOptions.ai.modelName}`,
+            connection.message,
+          ],
+        };
+      },
+    );
+  });
+
+const config = program.command("config").description("Manage configuration");
+
+config
+  .command("ai")
+  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option("--provider <provider>", "display name for the llm provider")
+  .option("--base-url <url>", "openai-compatible api base url")
+  .option("--model <model>", "model name")
+  .option("--auth-token <token>", "api auth token")
+  .option("--concurrency <count>", "translation concurrency", Number)
+  .action(async (options) => {
+    const existing = await loadExistingConfig(options.repo);
+    const currentAi = existing.ai;
+    const existingAuthToken =
+      typeof options.authToken === "string"
+        ? options.authToken
+        : await resolveAiAuthToken(options.repo, currentAi).catch(() => "");
+    const answers = await promptAiConfig(
+      {
+        llmProvider: options.provider ?? currentAi.llmProvider,
+        baseUrl: options.baseUrl ?? currentAi.baseUrl,
+        modelName: options.model ?? currentAi.modelName,
+        authToken:
+          typeof options.authToken === "string" ? options.authToken : "",
+        fallbackAuthToken: existingAuthToken,
+        concurrency: options.concurrency ?? currentAi.concurrency,
+        requestTimeoutMs: currentAi.requestTimeoutMs,
+        maxAttemptsPerTask: currentAi.maxAttemptsPerTask,
+        temperature: currentAi.temperature,
+        authTokenEnvVar: currentAi.authTokenEnvVar,
+      },
+      {
+        title: "Configure AI model",
+      },
+    );
+    await runWithSpinner(
+      "Updating AI configuration",
+      async ({ logger, signal }) => {
+        const connection = await testAiConnection(
+          answers.ai,
+          answers.authToken,
+          signal,
+        );
+        if (!connection.ok) {
+          throw new Error(`AI connection test failed: ${connection.message}`);
+        }
+
+        await saveMirrorAiConfig(
+          options.repo,
+          answers.ai,
+          answers.authToken,
+          logger,
+        );
+        return {
+          message: `Updated AI configuration for ${options.repo}`,
+          details: [
+            `model: ${answers.ai.llmProvider}/${answers.ai.modelName}`,
+            connection.message,
+          ],
+        };
       },
     );
   });
@@ -112,106 +210,83 @@ translate
   });
 
 translate
-  .command("claim")
+  .command("run")
   .option("--repo <dir>", "mirror repository directory", process.cwd())
-  .option("--task <taskId>", "specific task id to claim")
-  .option(
-    "--worker <workerId>",
-    "worker id recorded in the task lease",
-    process.env.DOCUMIRROR_WORKER_ID ?? process.env.USER ?? "agent",
-  )
-  .option(
-    "--lease-minutes <minutes>",
-    "claim lease duration in minutes",
-    (value) => value,
-  )
+  .option("--debug", "print per-task debug logs")
   .action(async (options) => {
-    await runWithSpinner("Claiming translation task", async ({ logger }) => {
-      const summary = await claimTranslationTask(
-        options.repo,
-        {
-          taskId: options.task,
-          workerId: options.worker,
-          leaseMinutes:
-            options.leaseMinutes === undefined
-              ? undefined
-              : Number.parseInt(String(options.leaseMinutes), 10),
-        },
-        logger,
-      );
-      return {
-        message: `Claimed ${summary.taskId}`,
-        details: [
-          `task file: ${summary.taskFile}`,
-          `draft result: ${summary.draftResultFile}`,
-          `worker: ${summary.claimedBy}`,
-          `lease until: ${summary.leaseUntil}`,
-          `next: documirror translate verify --repo ${options.repo} --task ${summary.taskId}`,
-        ],
-      };
-    });
-  });
+    await runWithSpinner(
+      "Running automatic translation",
+      async ({ logger, setText, signal, persistInfo }) => {
+        const progressState = createRunProgressState();
+        const progressTimer = setInterval(() => {
+          setText(formatRunProgressMessage(progressState));
+        }, 1000);
+        progressTimer.unref();
+        const debugHeartbeatTimer = options.debug
+          ? setInterval(() => {
+              persistInfo(`[debug] ${formatRunProgressMessage(progressState)}`);
+            }, 15_000)
+          : undefined;
+        debugHeartbeatTimer?.unref();
 
-translate
-  .command("release")
-  .requiredOption("--task <taskId>", "task id to release")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
-  .option("--drop-draft", "remove the current draft result when releasing")
-  .action(async (options) => {
-    await runWithSpinner("Releasing translation task", async ({ logger }) => {
-      const summary = await releaseTranslationTask(
-        options.repo,
-        {
-          taskId: options.task,
-          dropDraft: options.dropDraft,
-        },
-        logger,
-      );
-      return {
-        message: `Released ${summary.taskId}`,
-        details: [
-          `removed draft: ${summary.removedDraft ? "yes" : "no"}`,
-          `lease was expired: ${summary.wasExpired ? "yes" : "no"}`,
-        ],
-      };
-    });
-  });
+        try {
+          const summary = await runTranslations(
+            options.repo,
+            logger,
+            (event) => {
+              applyRunProgressEvent(progressState, event);
+              setText(formatRunProgressMessage(progressState));
+              if (event.type === "failed") {
+                logger.warn(
+                  `${event.taskId} failed: ${event.error} (${event.reportPath})`,
+                );
+              }
+            },
+            signal,
+            options.debug
+              ? {
+                  onDebug(message) {
+                    persistInfo(`[debug] ${message}`);
+                  },
+                }
+              : undefined,
+          );
+          if (summary.failureCount > 0) {
+            throw new Error(
+              `Automatic translation finished with ${summary.failureCount} failed task(s). See ${summary.reportDir}.`,
+            );
+          }
 
-translate
-  .command("reclaim-expired")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
-  .option(
-    "--drop-draft",
-    "remove draft result files while reclaiming expired tasks",
-  )
-  .action(async (options) => {
-    await runWithSpinner("Reclaiming expired tasks", async ({ logger }) => {
-      const summary = await reclaimExpiredTranslationTasks(
-        options.repo,
-        {
-          dropDraft: options.dropDraft,
-        },
-        logger,
-      );
-      return {
-        message: `Reclaimed ${summary.reclaimedTaskCount} expired tasks`,
-        details: [
-          `removed drafts: ${summary.removedDraftCount}`,
-          `tasks: ${summary.taskIds.join(", ") || "none"}`,
-        ],
-      };
-    });
+          return {
+            message: `Finished automatic translation: ${summary.successCount} succeeded, ${summary.failureCount} failed`,
+            details: [
+              `completed: ${summary.completedTasks}/${summary.totalTasks}`,
+              `failure reports: ${summary.reportDir}`,
+            ],
+          };
+        } finally {
+          clearInterval(progressTimer);
+          if (debugHeartbeatTimer) {
+            clearInterval(debugHeartbeatTimer);
+          }
+        }
+      },
+    );
   });
 
 translate
   .command("verify")
   .requiredOption("--task <taskId>", "task id to verify")
   .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option("--result <path>", "explicit result file to verify")
   .action(async (options) => {
-    await runWithSpinner("Verifying translation draft", async ({ logger }) => {
+    await runWithSpinner("Verifying translation result", async ({ logger }) => {
       const summary = await verifyTranslationTask(
         options.repo,
         options.task,
+        {
+          resultPath: options.result,
+        },
         logger,
       );
       if (!summary.ok) {
@@ -235,28 +310,6 @@ translate
           `errors: ${summary.errorCount}`,
           `warnings: ${summary.warningCount}`,
         ],
-      };
-    });
-  });
-
-translate
-  .command("complete")
-  .requiredOption("--task <taskId>", "task id to complete")
-  .requiredOption("--provider <provider>", "agent or provider name")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
-  .action(async (options) => {
-    await runWithSpinner("Completing translation task", async ({ logger }) => {
-      const summary = await completeTranslationTask(
-        options.repo,
-        {
-          taskId: options.task,
-          provider: options.provider,
-        },
-        logger,
-      );
-      return {
-        message: `Completed ${summary.taskId}`,
-        details: [`result file: ${summary.resultFile}`],
       };
     });
   });
@@ -327,11 +380,9 @@ program
     console.log(`accepted translations: ${status.acceptedTranslationCount}`);
     console.log(`stale translations: ${status.staleTranslationCount}`);
     console.log(`pending tasks: ${status.pendingTaskCount}`);
-    console.log(`in-progress tasks: ${status.inProgressTaskCount}`);
     console.log(`done tasks: ${status.doneTaskCount}`);
     console.log(`applied tasks: ${status.appliedTaskCount}`);
     console.log(`invalid tasks: ${status.invalidTaskCount}`);
-    console.log(`expired leases: ${status.expiredLeaseTaskCount}`);
   });
 
 program
@@ -346,6 +397,200 @@ program
     console.error(pc.red(message));
     process.exitCode = 1;
   });
+
+type InitAnswers = {
+  repoDir: string;
+  siteUrl: string;
+  targetLocale: string;
+  ai: MirrorAiConfig;
+  authToken: string;
+};
+
+async function collectInitOptions(
+  options: Record<string, unknown>,
+): Promise<InitAnswers> {
+  const initialAi = {
+    llmProvider: String(options.provider ?? "openai"),
+    baseUrl: String(options.baseUrl ?? "https://api.openai.com/v1"),
+    modelName: String(options.model ?? "gpt-4.1-mini"),
+    authToken: String(options.authToken ?? ""),
+    fallbackAuthToken: "",
+    concurrency:
+      typeof options.concurrency === "number" &&
+      !Number.isNaN(options.concurrency)
+        ? options.concurrency
+        : 4,
+    requestTimeoutMs: 300_000,
+    maxAttemptsPerTask: 3,
+    temperature: 0.2,
+    authTokenEnvVar: "DOCUMIRROR_AI_AUTH_TOKEN",
+  };
+  const repoDir = String(options.repo ?? process.cwd());
+  const siteUrl =
+    typeof options.siteUrl === "string" ? options.siteUrl : undefined;
+  const targetLocale =
+    typeof options.locale === "string" ? options.locale : undefined;
+
+  if (
+    !process.stdin.isTTY &&
+    (!siteUrl || !targetLocale || !initialAi.authToken)
+  ) {
+    throw new Error(
+      "Non-interactive init requires --site-url, --locale, and --auth-token.",
+    );
+  }
+
+  const answers: Record<string, string> = process.stdin.isTTY
+    ? ((await prompts(
+        [
+          {
+            type: siteUrl ? null : "text",
+            name: "siteUrl",
+            message: "Source documentation site URL",
+            initial: "https://docs.example.com",
+            validate: (value: string) =>
+              value.startsWith("http") ? true : "Enter a valid URL.",
+          },
+          {
+            type: targetLocale ? null : "text",
+            name: "targetLocale",
+            message: "Target locale",
+            initial: "zh-CN",
+          },
+          {
+            type: "text",
+            name: "repoDir",
+            message: "Repository directory",
+            initial: repoDir,
+          },
+        ],
+        {
+          onCancel: () => {
+            throw new Error("Initialization cancelled.");
+          },
+        },
+      )) as Record<string, string>)
+    : {};
+
+  const aiAnswers = await promptAiConfig(initialAi, {
+    title: "Configure AI model",
+  });
+
+  return {
+    repoDir: String(answers.repoDir ?? repoDir),
+    siteUrl: String(answers.siteUrl ?? siteUrl),
+    targetLocale: String(answers.targetLocale ?? targetLocale),
+    ai: aiAnswers.ai,
+    authToken: aiAnswers.authToken,
+  };
+}
+
+async function promptAiConfig(
+  initial: {
+    llmProvider: string;
+    baseUrl: string;
+    modelName: string;
+    authToken: string;
+    fallbackAuthToken: string;
+    concurrency: number;
+    requestTimeoutMs: number;
+    maxAttemptsPerTask: number;
+    temperature: number;
+    authTokenEnvVar: string;
+  },
+  options: {
+    title: string;
+  },
+): Promise<{
+  ai: MirrorAiConfig;
+  authToken: string;
+}> {
+  const answers: Record<string, string | number> = process.stdin.isTTY
+    ? ((await prompts(
+        [
+          {
+            type: "text",
+            name: "llmProvider",
+            message: `${options.title}: provider label`,
+            initial: initial.llmProvider,
+          },
+          {
+            type: "text",
+            name: "baseUrl",
+            message: "OpenAI-compatible base URL",
+            initial: initial.baseUrl,
+          },
+          {
+            type: "text",
+            name: "modelName",
+            message: "Model name",
+            initial: initial.modelName,
+          },
+          {
+            type: "password",
+            name: "authToken",
+            message: initial.fallbackAuthToken
+              ? "API auth token (leave blank to keep existing)"
+              : "API auth token",
+            initial: initial.authToken,
+          },
+          {
+            type: "number",
+            name: "concurrency",
+            message: "Translation concurrency",
+            initial: initial.concurrency,
+            min: 1,
+            max: 32,
+          },
+          {
+            type: "number",
+            name: "requestTimeoutMs",
+            message: "Request timeout (ms)",
+            initial: initial.requestTimeoutMs,
+            min: 1_000,
+            max: 300_000,
+          },
+        ],
+        {
+          onCancel: () => {
+            throw new Error("Configuration cancelled.");
+          },
+        },
+      )) as Record<string, string | number>)
+    : initial;
+
+  const authToken =
+    String(answers.authToken ?? initial.authToken).trim() ||
+    initial.fallbackAuthToken.trim();
+  if (!authToken) {
+    throw new Error("API auth token is required.");
+  }
+
+  return {
+    ai: {
+      providerKind: "openai-compatible",
+      llmProvider: String(answers.llmProvider ?? initial.llmProvider),
+      baseUrl: String(answers.baseUrl ?? initial.baseUrl),
+      modelName: String(answers.modelName ?? initial.modelName),
+      authTokenEnvVar: initial.authTokenEnvVar,
+      concurrency: Number(answers.concurrency ?? initial.concurrency),
+      requestTimeoutMs: Number(
+        answers.requestTimeoutMs ?? initial.requestTimeoutMs,
+      ),
+      maxAttemptsPerTask: initial.maxAttemptsPerTask,
+      temperature: initial.temperature,
+    },
+    authToken,
+  };
+}
+
+async function loadExistingConfig(repoDir: string): Promise<MirrorConfig> {
+  const body = await readFile(
+    join(repoDir, ".documirror", "config.json"),
+    "utf8",
+  );
+  return mirrorConfigSchema.parse(JSON.parse(body));
+}
 
 async function runWithSpinner(
   title: string,
@@ -401,6 +646,7 @@ async function runWithSpinner(
 type SpinnerControls = {
   logger: Logger;
   setText: (message: string) => void;
+  persistInfo: (message: string) => void;
   signal: AbortSignal;
 };
 
@@ -425,6 +671,9 @@ function createSpinnerControls(
       },
     },
     setText,
+    persistInfo(message) {
+      persistSpinnerMessage(spinner, pc.cyan(">"), message);
+    },
     signal,
   };
 }

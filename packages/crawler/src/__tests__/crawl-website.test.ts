@@ -302,6 +302,17 @@ function createConfig(
     build: {
       basePath: "/",
     },
+    ai: {
+      providerKind: "openai-compatible",
+      llmProvider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      modelName: "gpt-4.1-mini",
+      authTokenEnvVar: "DOCUMIRROR_AI_AUTH_TOKEN",
+      concurrency: 4,
+      requestTimeoutMs: 60_000,
+      maxAttemptsPerTask: 3,
+      temperature: 0.2,
+    },
     ...overrides,
   };
 }

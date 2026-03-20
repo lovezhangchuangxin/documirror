@@ -70,6 +70,17 @@ describe("rewriteLinks", () => {
       build: {
         basePath: "/mirror",
       },
+      ai: {
+        providerKind: "openai-compatible",
+        llmProvider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        modelName: "gpt-4.1-mini",
+        authTokenEnvVar: "DOCUMIRROR_AI_AUTH_TOKEN",
+        concurrency: 4,
+        requestTimeoutMs: 60_000,
+        maxAttemptsPerTask: 3,
+        temperature: 0.2,
+      },
     };
     const $ = load(
       `<main><a href="/guide/?lang=en#install">Install</a><img srcset="/images/hero.png?v=1 1x, /images/hero.png?v=2 2x"></main>`,

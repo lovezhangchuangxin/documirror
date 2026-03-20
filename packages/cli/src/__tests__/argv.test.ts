@@ -92,21 +92,19 @@ describe("normalizeCliArgv", () => {
         "node",
         "documirror",
         "translate",
-        "claim",
+        "run",
         "--repo",
         ".",
-        "--worker",
-        "agent-01",
+        "--verbose",
       ]),
     ).toEqual([
       "node",
       "documirror",
       "translate",
-      "claim",
+      "run",
       "--repo",
       ".",
-      "--worker",
-      "agent-01",
+      "--verbose",
     ]);
   });
 });

@@ -93,6 +93,7 @@ export const translationDraftResultFileSchema = z.object({
   schemaVersion: z.literal(2),
   taskId: z.string(),
   provider: z.string().optional(),
+  model: z.string().optional(),
   completedAt: z.string().optional(),
   translations: z
     .array(translationResultItemSchema)
@@ -107,6 +108,7 @@ export const translationResultFileSchema = z.object({
   schemaVersion: z.literal(2),
   taskId: z.string(),
   provider: z.string(),
+  model: z.string(),
   completedAt: z.string(),
   translations: z
     .array(translationResultItemSchema)
@@ -117,7 +119,6 @@ export type TranslationResultFile = z.infer<typeof translationResultFileSchema>;
 
 export const translationTaskStatusSchema = z.enum([
   "pending",
-  "in-progress",
   "done",
   "applied",
   "invalid",
@@ -154,10 +155,8 @@ export const translationVerificationReportSchema = z.object({
   schemaVersion: z.literal(1),
   taskId: z.string(),
   checkedAt: z.string(),
-  draftResultFile: z.string(),
-  draftResultHash: z.string(),
-  claimId: z.string().optional(),
-  claimedBy: z.string().optional(),
+  resultFile: z.string(),
+  resultHash: z.string(),
   ok: z.boolean(),
   errorCount: z.number().int().nonnegative(),
   warningCount: z.number().int().nonnegative(),
@@ -178,18 +177,16 @@ export const translationTaskManifestEntrySchema = z.object({
   status: translationTaskStatusSchema,
   contentCount: z.number().int().nonnegative(),
   taskFile: z.string(),
-  draftResultFile: z.string().optional(),
   doneResultFile: z.string().optional(),
-  claimId: z.string().optional(),
-  claimedAt: z.string().optional(),
-  claimedBy: z.string().optional(),
-  leaseUntil: z.string().optional(),
-  leaseExpired: z.boolean().optional(),
   completedAt: z.string().optional(),
   provider: z.string().optional(),
+  model: z.string().optional(),
   lastVerifiedAt: z.string().optional(),
   lastVerifyStatus: z.enum(["pass", "fail"]).optional(),
   lastVerifyErrorCount: z.number().int().nonnegative().optional(),
+  lastRunAt: z.string().optional(),
+  lastRunStatus: z.enum(["pass", "fail"]).optional(),
+  lastRunError: z.string().optional(),
 });
 
 export type TranslationTaskManifestEntry = z.infer<
@@ -199,7 +196,6 @@ export type TranslationTaskManifestEntry = z.infer<
 export const translationTaskManifestSummarySchema = z.object({
   total: z.number().int().nonnegative(),
   pending: z.number().int().nonnegative(),
-  inProgress: z.number().int().nonnegative(),
   done: z.number().int().nonnegative(),
   applied: z.number().int().nonnegative(),
   invalid: z.number().int().nonnegative(),

@@ -1,14 +1,12 @@
-import { open } from "node:fs/promises";
-
 import fg from "fast-glob";
 import fs from "fs-extra";
-import { nanoid } from "nanoid";
+import pLimit from "p-limit";
 import { basename, join, relative } from "pathe";
 import { ZodError } from "zod";
 
+import { translateTaskWithOpenAi } from "@documirror/adapters-openai";
 import {
   createTaskBundle,
-  parseDraftResultFile,
   parseResultFile,
   parseTaskFile,
   parseTaskMappingFile,
@@ -29,7 +27,6 @@ import type {
   SegmentRecord,
   TranslationDraftResultFile,
   TranslationResultFile,
-  TranslationTaskClaimFile,
   TranslationTaskFile,
   TranslationTaskManifest,
   TranslationTaskManifestEntry,
@@ -40,16 +37,15 @@ import type {
 } from "@documirror/shared";
 import {
   createTimestamp,
-  DEFAULT_TASK_LEASE_MINUTES,
   defaultLogger,
   hashString,
   normalizeText,
-  translationTaskClaimFileSchema,
   translationTaskManifestEntrySchema,
   translationTaskManifestSchema,
   translationVerificationReportSchema,
 } from "@documirror/shared";
 
+import { resolveAiAuthToken } from "./ai-config";
 import { getRepoPaths } from "./repo-paths";
 import {
   loadConfig,
@@ -62,23 +58,22 @@ import {
 } from "./storage";
 import type {
   ApplySummary,
-  ClaimSummary,
-  CompleteSummary,
   PlanSummary,
-  ReclaimExpiredSummary,
-  ReleaseSummary,
+  RunSummary,
+  RunTranslationsOptions,
+  RunTranslationsProgressEvent,
   VerifySummary,
 } from "./types";
 
 const VERIFY_REPORT_DIR = "translation-verify";
+const RUN_REPORT_DIR = "translation-run";
 const PLACEHOLDER_TOKEN_REGEX =
   /\{\{[^{}]+\}\}|\{[A-Za-z0-9_.-]+\}|%(\d+\$)?[+#0\- ]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[sdifo]|<\/?\d+>|\$[A-Z_][A-Z0-9_]*/gu;
 const TASK_STATUS_ORDER = {
   pending: 0,
-  "in-progress": 1,
-  done: 2,
-  applied: 3,
-  invalid: 4,
+  done: 1,
+  applied: 2,
+  invalid: 3,
 } as const;
 
 type PlannedPageTask = {
@@ -92,13 +87,20 @@ type RetainPendingTasksResult = {
   invalidatedTaskIds: string[];
 };
 
-type NormalizedTaskClaimFile = Omit<
-  TranslationTaskClaimFile,
-  "claimId" | "claimedBy" | "leaseUntil"
-> & {
-  claimId: string;
-  claimedBy: string;
-  leaseUntil: string;
+type RunFailureReport = {
+  schemaVersion: 1;
+  taskId: string;
+  failedAt: string;
+  attemptCount: number;
+  resultPreview?: string;
+  errors: TranslationVerificationIssue[];
+  message: string;
+};
+
+type CandidateVerification = {
+  ok: boolean;
+  errors: TranslationVerificationIssue[];
+  warnings: TranslationVerificationIssue[];
 };
 
 export async function planTranslations(
@@ -139,7 +141,7 @@ export async function planTranslations(
   let createdTaskCount = 0;
 
   for (const plannedPage of createdPages) {
-    const taskId = `task_${nanoid(10)}`;
+    const taskId = createTaskId(plannedPage.pageUrl);
     const { task, mapping } = createTaskBundle(
       taskId,
       config.sourceUrl,
@@ -186,146 +188,126 @@ export async function refreshTranslationTaskManifest(
   );
 }
 
-export async function claimTranslationTask(
+export async function runTranslations(
   repoDir: string,
-  options: {
-    taskId?: string;
-    workerId?: string;
-    leaseMinutes?: number;
-  } = {},
   logger: Logger = defaultLogger,
-): Promise<ClaimSummary> {
+  onProgress?: (event: RunTranslationsProgressEvent) => void,
+  signal?: AbortSignal,
+  options: RunTranslationsOptions = {},
+): Promise<RunSummary> {
   const paths = getRepoPaths(repoDir);
   const config = await loadConfig(paths);
-  const workerId = options.workerId?.trim() || "unknown";
-  const leaseMinutes = normalizeLeaseMinutes(options.leaseMinutes);
-  await reclaimExpiredTaskClaims(paths, logger);
-  const taskManifest = await syncTaskManifest(
+  const emitDebug = createRunDebugEmitter(options.onDebug);
+  emitDebug(
+    `loaded AI config: ${config.ai.llmProvider}/${config.ai.modelName} via ${config.ai.baseUrl} (concurrency ${config.ai.concurrency}, timeout ${formatRunDuration(config.ai.requestTimeoutMs)}, max attempts ${config.ai.maxAttemptsPerTask})`,
+  );
+  const authToken = await resolveAiAuthToken(repoDir, config.ai);
+  emitDebug("resolved API auth token");
+  const segmentIndex = new Map(
+    (await loadSegments(paths)).map((segment) => [segment.segmentId, segment]),
+  );
+  emitDebug(`loaded ${segmentIndex.size} extracted segments`);
+  const manifest = await syncTaskManifest(
     repoDir,
     config.sourceUrl,
     config.targetLocale,
     logger,
   );
-  const candidates = options.taskId
-    ? [taskManifest.tasks.find((task) => task.taskId === options.taskId)]
-    : taskManifest.tasks.filter((task) => task.status === "pending");
+  const pendingTasks = manifest.tasks.filter(
+    (task) => task.status === "pending",
+  );
+  const total = pendingTasks.length;
+  emitDebug(`task manifest synced; ${total} pending task(s) ready to run`);
+  let completed = 0;
+  let successCount = 0;
+  let failureCount = 0;
 
-  if (candidates.length === 0 || !candidates[0]) {
-    throw new Error(
-      options.taskId
-        ? `Task ${options.taskId} was not found in the current translation queue`
-        : "No pending translation tasks are available to claim",
-    );
-  }
+  onProgress?.({
+    type: "queued",
+    total,
+    concurrency: config.ai.concurrency,
+    provider: config.ai.llmProvider,
+    model: config.ai.modelName,
+    requestTimeoutMs: config.ai.requestTimeoutMs,
+  });
 
-  if (options.taskId && candidates[0].status !== "pending") {
-    const claimOwner = candidates[0].claimedBy
-      ? ` by ${candidates[0].claimedBy}`
-      : "";
-    const leaseUntil = candidates[0].leaseUntil
-      ? ` until ${candidates[0].leaseUntil}`
-      : "";
-    throw new Error(
-      `Task ${candidates[0].taskId} is ${candidates[0].status}${claimOwner}${leaseUntil} and cannot be claimed`,
-    );
-  }
-
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue;
-    }
-
-    const claimed = await tryClaimTask(repoDir, paths, {
-      taskId: candidate.taskId,
-      workerId,
-      leaseMinutes,
-    });
-    if (claimed) {
-      await syncTaskManifest(
+  if (total === 0) {
+    return {
+      totalTasks: 0,
+      completedTasks: 0,
+      successCount: 0,
+      failureCount: 0,
+      skippedCount: 0,
+      reportDir: toRepoRelativePath(
         repoDir,
-        config.sourceUrl,
-        config.targetLocale,
-        logger,
-      );
-      return claimed;
-    }
+        join(paths.reportsDir, RUN_REPORT_DIR),
+      ),
+    };
   }
 
-  throw new Error(
-    options.taskId
-      ? `Task ${options.taskId} was claimed by another worker before it could be claimed`
-      : "No pending translation tasks are available to claim",
-  );
-}
+  const limit = pLimit(config.ai.concurrency);
+  await Promise.all(
+    pendingTasks.map((entry) =>
+      limit(async () => {
+        throwIfAborted(signal);
+        onProgress?.({
+          type: "started",
+          taskId: entry.taskId,
+          completed,
+          total,
+        });
 
-export async function releaseTranslationTask(
-  repoDir: string,
-  options: {
-    taskId: string;
-    dropDraft?: boolean;
-  },
-  logger: Logger = defaultLogger,
-): Promise<ReleaseSummary> {
-  const paths = getRepoPaths(repoDir);
-  const config = await loadConfig(paths);
-  const taskPath = getPendingTaskPath(paths, options.taskId);
-  const claimPath = getTaskClaimPath(paths, options.taskId);
-  const doneResultPath = getDoneResultPath(paths, options.taskId);
-
-  if (!(await fs.pathExists(taskPath))) {
-    throw new Error(
-      `Task ${options.taskId} was not found in the current translation queue`,
-    );
-  }
-
-  if (await fs.pathExists(doneResultPath)) {
-    throw new Error(
-      `Task ${options.taskId} is already complete and cannot be released`,
-    );
-  }
-
-  const claim = await loadClaimFile(claimPath, logger);
-  if (!claim) {
-    throw new Error(`Task ${options.taskId} is not currently claimed`);
-  }
-
-  await fs.remove(claimPath);
-  await fs.remove(getVerificationReportPath(paths, options.taskId));
-
-  let removedDraft = false;
-  if (options.dropDraft) {
-    await fs.remove(getDraftResultPath(paths, options.taskId));
-    removedDraft = true;
-  }
-
-  await syncTaskManifest(
-    repoDir,
-    config.sourceUrl,
-    config.targetLocale,
-    logger,
-  );
-  return {
-    taskId: options.taskId,
-    removedDraft,
-    wasExpired: isClaimExpired(claim),
-  };
-}
-
-export async function reclaimExpiredTranslationTasks(
-  repoDir: string,
-  options: {
-    dropDraft?: boolean;
-  } = {},
-  logger: Logger = defaultLogger,
-): Promise<ReclaimExpiredSummary> {
-  const paths = getRepoPaths(repoDir);
-  const config = await loadConfig(paths);
-  const { taskIds, removedDraftCount } = await reclaimExpiredTaskClaims(
-    paths,
-    logger,
-    {
-      dropDraft: options.dropDraft,
-    },
+        try {
+          await runSingleTask({
+            repoDir,
+            taskId: entry.taskId,
+            authToken,
+            config,
+            segmentIndex,
+            logger,
+            signal,
+            onProgress,
+            onDebug: emitDebug,
+            getSnapshot: () => ({
+              completed,
+              successCount,
+              failureCount,
+              total,
+            }),
+          });
+          completed += 1;
+          successCount += 1;
+          onProgress?.({
+            type: "completed",
+            taskId: entry.taskId,
+            completed,
+            total,
+            successCount,
+            failureCount,
+          });
+        } catch (error) {
+          if (isAbortLikeError(error, signal)) {
+            throw error;
+          }
+          completed += 1;
+          failureCount += 1;
+          const reportPath = getRunFailureReportPath(paths, entry.taskId);
+          emitDebug(
+            `${entry.taskId}: failed after all attempts; report written to ${toRepoRelativePath(repoDir, reportPath)}`,
+          );
+          onProgress?.({
+            type: "failed",
+            taskId: entry.taskId,
+            completed,
+            total,
+            successCount,
+            failureCount,
+            error: error instanceof Error ? error.message : String(error),
+            reportPath: toRepoRelativePath(repoDir, reportPath),
+          });
+        }
+      }),
+    ),
   );
 
   await syncTaskManifest(
@@ -334,16 +316,26 @@ export async function reclaimExpiredTranslationTasks(
     config.targetLocale,
     logger,
   );
+
   return {
-    reclaimedTaskCount: taskIds.length,
-    taskIds,
-    removedDraftCount,
+    totalTasks: total,
+    completedTasks: completed,
+    successCount,
+    failureCount,
+    skippedCount: 0,
+    reportDir: toRepoRelativePath(
+      repoDir,
+      join(paths.reportsDir, RUN_REPORT_DIR),
+    ),
   };
 }
 
 export async function verifyTranslationTask(
   repoDir: string,
   taskId: string,
+  options: {
+    resultPath?: string;
+  } = {},
   logger: Logger = defaultLogger,
 ): Promise<VerifySummary> {
   const paths = getRepoPaths(repoDir);
@@ -351,66 +343,38 @@ export async function verifyTranslationTask(
   const segmentIndex = new Map(
     (await loadSegments(paths)).map((segment) => [segment.segmentId, segment]),
   );
-  const taskPath = getPendingTaskPath(paths, taskId);
-  const draftResultPath = getDraftResultPath(paths, taskId);
+  const { task, mapping } = await loadTaskArtifacts(paths, taskId);
+  const resultPath = options.resultPath ?? getDoneResultPath(paths, taskId);
 
-  if (!(await fs.pathExists(taskPath))) {
-    throw new Error(`Task ${taskId} is not available under pending tasks`);
-  }
-
-  if (!(await fs.pathExists(draftResultPath))) {
+  if (!(await fs.pathExists(resultPath))) {
     throw new Error(
-      `Draft result file is missing: ${toRepoRelativePath(repoDir, draftResultPath)}`,
+      `Result file is missing: ${toRepoRelativePath(repoDir, resultPath)}`,
     );
   }
 
-  const task = parseTaskFile(await readJson(taskPath, {}));
-  const mapping = await loadTaskMapping(paths.taskMappingsDir, taskId);
-  if (!mapping) {
-    throw new Error(`Task mapping for ${taskId} is missing or unreadable`);
-  }
-  const claim = await loadClaimFile(getTaskClaimPath(paths, taskId), logger);
-
-  const draftBody = await fs.readFile(draftResultPath, "utf8");
-  const draftResultHash = hashString(draftBody);
-  const checkedAt = createTimestamp();
-  const warnings: TranslationVerificationIssue[] = [];
-  const issues: TranslationVerificationIssue[] = [];
-  let draft: TranslationDraftResultFile | null = null;
-
+  const resultBody = await fs.readFile(resultPath, "utf8");
+  let verification: CandidateVerification;
   try {
-    draft = parseDraftResultFile(JSON.parse(draftBody));
+    const candidate = parseCandidateResult(resultBody);
+    verification = verifyCandidateResult(
+      task,
+      mapping,
+      segmentIndex,
+      candidate,
+    );
   } catch (error) {
-    issues.push(...createIssuesFromUnknownError(error, "$"));
+    verification = {
+      ok: false,
+      errors: createIssuesFromUnknownError(error, "$"),
+      warnings: [],
+    };
   }
-
-  if (draft) {
-    issues.push(...validateTaskStructure(task));
-    issues.push(...validateTaskFreshness(task, mapping, segmentIndex));
-    issues.push(...validateTranslationsAgainstTask(task, mapping, draft));
-    warnings.push(...collectTranslationWarnings(task, draft));
-    if (claim && isClaimExpired(claim)) {
-      issues.push({
-        code: "claim_expired",
-        message: `Task ${taskId} claim expired at ${claim.leaseUntil}; reclaim the task before completing it`,
-        jsonPath: "$",
-      });
-    }
-  }
-
-  const report = translationVerificationReportSchema.parse({
-    schemaVersion: 1,
+  const report = buildVerificationReport({
+    repoDir,
     taskId,
-    checkedAt,
-    draftResultFile: toRepoRelativePath(repoDir, draftResultPath),
-    draftResultHash,
-    claimId: claim?.claimId,
-    claimedBy: claim?.claimedBy,
-    ok: issues.length === 0,
-    errorCount: issues.length,
-    warningCount: dedupeIssues(warnings).length,
-    errors: issues,
-    warnings: dedupeIssues(warnings),
+    resultPath,
+    resultBody,
+    verification,
   });
   const reportPath = getVerificationReportPath(paths, taskId);
   await writeJson(reportPath, report);
@@ -429,111 +393,6 @@ export async function verifyTranslationTask(
     warningCount: report.warningCount,
     errors: report.errors,
     warnings: report.warnings,
-  };
-}
-
-export async function completeTranslationTask(
-  repoDir: string,
-  options: {
-    taskId: string;
-    provider: string;
-  },
-  logger: Logger = defaultLogger,
-): Promise<CompleteSummary> {
-  const paths = getRepoPaths(repoDir);
-  const config = await loadConfig(paths);
-  const segmentIndex = new Map(
-    (await loadSegments(paths)).map((segment) => [segment.segmentId, segment]),
-  );
-  const taskPath = getPendingTaskPath(paths, options.taskId);
-  const draftResultPath = getDraftResultPath(paths, options.taskId);
-  const reportPath = getVerificationReportPath(paths, options.taskId);
-  const claim = await loadClaimFile(
-    getTaskClaimPath(paths, options.taskId),
-    logger,
-  );
-
-  if (!(await fs.pathExists(taskPath))) {
-    throw new Error(
-      `Task ${options.taskId} is not available under pending tasks`,
-    );
-  }
-
-  if (!(await fs.pathExists(draftResultPath))) {
-    throw new Error(
-      `Draft result file is missing: ${toRepoRelativePath(repoDir, draftResultPath)}`,
-    );
-  }
-
-  if (!claim) {
-    throw new Error(
-      `Task ${options.taskId} must be claimed before it can be completed`,
-    );
-  }
-
-  if (isClaimExpired(claim)) {
-    throw new Error(
-      `Task ${options.taskId} claim expired at ${claim.leaseUntil}; reclaim the task and rerun translate verify`,
-    );
-  }
-
-  const report = await loadVerificationReport(reportPath);
-  if (!report || !report.ok) {
-    throw new Error(
-      `Task ${options.taskId} must pass translate verify before completion`,
-    );
-  }
-
-  const draftBody = await fs.readFile(draftResultPath, "utf8");
-  const draftResultHash = hashString(draftBody);
-  if (draftResultHash !== report.draftResultHash) {
-    throw new Error(
-      `Draft result for ${options.taskId} changed after verification; rerun translate verify`,
-    );
-  }
-
-  if (report.claimId && report.claimId !== claim.claimId) {
-    throw new Error(
-      `Verification report for ${options.taskId} does not match the current claim; rerun translate verify`,
-    );
-  }
-
-  const mapping = await loadTaskMapping(paths.taskMappingsDir, options.taskId);
-  if (!mapping) {
-    throw new Error(
-      `Task mapping for ${options.taskId} is missing or unreadable`,
-    );
-  }
-
-  const task = parseTaskFile(await readJson(taskPath, {}));
-  const freshnessIssues = validateTaskFreshness(task, mapping, segmentIndex);
-  if (freshnessIssues.length > 0) {
-    throw new Error(
-      `${freshnessIssues[0]?.message ?? `Task ${options.taskId} is stale; rerun translate plan and claim a new task`}`,
-    );
-  }
-
-  const draft = parseDraftResultFile(JSON.parse(draftBody));
-  const resultPath = getDoneResultPath(paths, options.taskId);
-  await writeJson(resultPath, {
-    schemaVersion: 2,
-    taskId: options.taskId,
-    provider: options.provider,
-    completedAt: createTimestamp(),
-    translations: draft.translations,
-  });
-
-  await fs.remove(draftResultPath);
-  await fs.remove(getTaskClaimPath(paths, options.taskId));
-  await syncTaskManifest(
-    repoDir,
-    config.sourceUrl,
-    config.targetLocale,
-    logger,
-  );
-  return {
-    taskId: options.taskId,
-    resultFile: toRepoRelativePath(repoDir, resultPath),
   };
 }
 
@@ -600,7 +459,6 @@ export async function applyTranslations(
     }
 
     const mappingIndex = new Map(mapping.items.map((item) => [item.id, item]));
-
     for (const item of parsed.translations) {
       const mappedItem = mappingIndex.get(item.id);
       if (!mappedItem) {
@@ -614,7 +472,7 @@ export async function applyTranslations(
         mappedItem,
         translatedText: item.translatedText,
         targetLocale: config.targetLocale,
-        provider: parsed.provider,
+        provider: `${parsed.provider}/${parsed.model}`,
         completedAt: parsed.completedAt,
         filePath,
         segmentIndex,
@@ -624,21 +482,10 @@ export async function applyTranslations(
       appliedSegments += appliedCount;
     }
 
-    await archivePendingTaskFile(paths, parsed.taskId);
-    await archiveTaskMapping(
-      paths.taskMappingsDir,
-      paths.tasksAppliedDir,
-      parsed.taskId,
-    );
-    await fs.remove(getTaskClaimPath(paths, parsed.taskId));
-    await fs.remove(getDraftResultPath(paths, parsed.taskId));
-    await fs.move(
-      filePath,
-      getAppliedResultPath(paths.tasksAppliedDir, parsed.taskId),
-      {
-        overwrite: true,
-      },
-    );
+    const archiveStamp = createArchiveStamp(parsed.completedAt);
+    await archivePendingTaskFile(paths, parsed.taskId, archiveStamp);
+    await archiveTaskMapping(parsed.taskId, paths, archiveStamp);
+    await archiveDoneResultFile(paths, parsed.taskId, filePath, archiveStamp);
     appliedFiles += 1;
   }
 
@@ -653,6 +500,232 @@ export async function applyTranslations(
     appliedFiles,
     appliedSegments,
   };
+}
+
+async function runSingleTask(options: {
+  repoDir: string;
+  taskId: string;
+  authToken: string;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  segmentIndex: Map<string, SegmentRecord>;
+  logger: Logger;
+  signal?: AbortSignal;
+  onProgress?: (event: RunTranslationsProgressEvent) => void;
+  onDebug?: (message: string) => void;
+  getSnapshot: () => {
+    completed: number;
+    successCount: number;
+    failureCount: number;
+    total: number;
+  };
+}): Promise<void> {
+  const {
+    repoDir,
+    taskId,
+    authToken,
+    config,
+    segmentIndex,
+    logger,
+    signal,
+    onProgress,
+    onDebug,
+    getSnapshot,
+  } = options;
+  const paths = getRepoPaths(repoDir);
+  onDebug?.(`${taskId}: loading task bundle`);
+  const task = parseTaskFile(
+    await readJson(getPendingTaskPath(paths, taskId), {}),
+  );
+  const mapping = await loadRequiredTaskMapping(paths.taskMappingsDir, taskId);
+  onDebug?.(
+    `${taskId}: loaded ${task.content.length} content item(s); validating freshness`,
+  );
+  const freshnessIssues = [
+    ...validateTaskStructure(task),
+    ...validateTaskFreshness(task, mapping, segmentIndex),
+  ];
+  if (freshnessIssues.length > 0) {
+    await writeRunFailureReport(
+      paths,
+      taskId,
+      config.ai.maxAttemptsPerTask,
+      freshnessIssues,
+      undefined,
+      freshnessIssues[0]?.message ?? `Task ${taskId} is stale`,
+    );
+    onDebug?.(
+      `${taskId}: freshness validation failed before translation: ${formatIssueSummary(freshnessIssues[0])}`,
+    );
+    throw new Error(freshnessIssues[0]?.message ?? `Task ${taskId} is stale`);
+  }
+
+  let previousResponse: string | undefined;
+  let lastIssues: TranslationVerificationIssue[] = [];
+
+  for (let attempt = 1; attempt <= config.ai.maxAttemptsPerTask; attempt += 1) {
+    throwIfAborted(signal);
+    const snapshot = getSnapshot();
+    onProgress?.({
+      type: "attempt",
+      taskId,
+      attempt,
+      maxAttempts: config.ai.maxAttemptsPerTask,
+      completed: snapshot.completed,
+      total: snapshot.total,
+    });
+    onDebug?.(
+      `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} starting`,
+    );
+
+    try {
+      const requestStartedAt = Date.now();
+      onDebug?.(
+        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} sending request to ${config.ai.baseUrl}`,
+      );
+      const translated = await translateTaskWithOpenAi({
+        config: config.ai,
+        authToken,
+        signal,
+        task,
+        previousResponse,
+        verificationIssues: lastIssues,
+        onDebug(message) {
+          onDebug?.(`${taskId}: ${message}`);
+        },
+      });
+      onDebug?.(
+        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} received response after ${formatRunDuration(Date.now() - requestStartedAt)}`,
+      );
+      previousResponse = translated.rawText;
+
+      const verification = verifyCandidateResult(
+        task,
+        mapping,
+        segmentIndex,
+        translated.draft,
+      );
+      if (!verification.ok) {
+        lastIssues = verification.errors;
+        logger.warn(
+          `Task ${taskId} failed validation on attempt ${attempt}: ${verification.errors[0]?.message ?? "unknown error"}`,
+        );
+        onDebug?.(
+          `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} validation failed: ${formatIssueSummary(verification.errors[0])}; retrying`,
+        );
+        continue;
+      }
+
+      const resultPath = getDoneResultPath(paths, taskId);
+      onDebug?.(
+        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} passed validation; writing result`,
+      );
+      const result = {
+        schemaVersion: 2 as const,
+        taskId,
+        provider: config.ai.llmProvider,
+        model: config.ai.modelName,
+        completedAt: createTimestamp(),
+        translations: translated.draft.translations,
+      };
+      await writeJson(resultPath, result);
+      const resultBody = await fs.readFile(resultPath, "utf8");
+      const report = buildVerificationReport({
+        repoDir,
+        taskId,
+        resultPath,
+        resultBody,
+        verification,
+      });
+      await writeJson(getVerificationReportPath(paths, taskId), report);
+      await fs.remove(getRunFailureReportPath(paths, taskId));
+      onDebug?.(
+        `${taskId}: wrote done result and verification report to ${toRepoRelativePath(repoDir, resultPath)}`,
+      );
+      return;
+    } catch (error) {
+      if (isAbortLikeError(error, signal)) {
+        onDebug?.(
+          `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} cancelled by user`,
+        );
+        throw error;
+      }
+      const issues = createIssuesFromUnknownError(error, "$");
+      lastIssues = issues;
+      onDebug?.(
+        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      await writeRunFailureReport(
+        paths,
+        taskId,
+        attempt,
+        issues,
+        previousResponse,
+        error instanceof Error ? error.message : String(error),
+      );
+      onDebug?.(
+        `${taskId}: wrote failure report for attempt ${attempt}/${config.ai.maxAttemptsPerTask}`,
+      );
+      if (attempt === config.ai.maxAttemptsPerTask) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+    }
+  }
+
+  await writeRunFailureReport(
+    paths,
+    taskId,
+    config.ai.maxAttemptsPerTask,
+    lastIssues,
+    previousResponse,
+    `Translation failed for ${taskId}`,
+  );
+  onDebug?.(`${taskId}: exhausted all attempts without a valid result`);
+  throw new Error(`Translation failed for ${taskId}`);
+}
+
+function verifyCandidateResult(
+  task: TranslationTaskFile,
+  mapping: TranslationTaskMappingFile,
+  segmentIndex: Map<string, SegmentRecord>,
+  result:
+    | TranslationDraftResultFile
+    | Pick<TranslationResultFile, "taskId" | "translations">,
+): CandidateVerification {
+  const errors = [
+    ...validateTaskStructure(task),
+    ...validateTaskFreshness(task, mapping, segmentIndex),
+    ...validateTranslationsAgainstTask(task, mapping, result),
+  ];
+  const warnings = collectTranslationWarnings(task, result);
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+function buildVerificationReport(options: {
+  repoDir: string;
+  taskId: string;
+  resultPath: string;
+  resultBody: string;
+  verification: CandidateVerification;
+}): TranslationVerificationReport {
+  const { repoDir, taskId, resultPath, resultBody, verification } = options;
+
+  return translationVerificationReportSchema.parse({
+    schemaVersion: 1,
+    taskId,
+    checkedAt: createTimestamp(),
+    resultFile: toRepoRelativePath(repoDir, resultPath),
+    resultHash: hashString(resultBody),
+    ok: verification.ok,
+    errorCount: verification.errors.length,
+    warningCount: verification.warnings.length,
+    errors: verification.errors,
+    warnings: verification.warnings,
+  });
 }
 
 async function buildPlannedPageTasks(
@@ -813,6 +886,20 @@ async function syncTaskManifest(
       );
       entriesById.set(entry.taskId, entry);
     } catch (error) {
+      const taskId = getTaskIdFromPath(taskFilePath);
+      if (taskId) {
+        entriesById.set(
+          taskId,
+          buildInvalidManifestEntry({
+            repoDir,
+            taskId,
+            taskFile: toRepoRelativePath(repoDir, taskFilePath),
+            previousEntry: previousManifest.tasks.find(
+              (task) => task.taskId === taskId,
+            ),
+          }),
+        );
+      }
       logger.warn(
         `Skipping unreadable task manifest entry ${taskFilePath}: ${String(error)}`,
       );
@@ -835,6 +922,24 @@ async function syncTaskManifest(
         entriesById.set(entry.taskId, entry);
       }
     } catch (error) {
+      const taskId = basename(taskFilePath, ".task.json");
+      if (taskId && !entriesById.has(taskId)) {
+        entriesById.set(
+          taskId,
+          buildInvalidManifestEntry({
+            repoDir,
+            taskId,
+            taskFile: toRepoRelativePath(repoDir, taskFilePath),
+            doneResultFile: toRepoRelativePath(
+              repoDir,
+              getAppliedResultPath(paths.tasksAppliedDir, taskId),
+            ),
+            previousEntry: previousManifest.tasks.find(
+              (task) => task.taskId === taskId,
+            ),
+          }),
+        );
+      }
       logger.warn(
         `Skipping unreadable applied task manifest entry ${taskFilePath}: ${String(error)}`,
       );
@@ -851,28 +956,14 @@ async function syncTaskManifest(
     );
     entriesById.set(
       taskId,
-      translationTaskManifestEntrySchema.parse({
+      buildInvalidManifestEntry({
+        repoDir,
         taskId,
-        page: previousEntry?.page ?? {
-          url: "",
-        },
-        status: "invalid",
-        contentCount: previousEntry?.contentCount ?? 0,
         taskFile:
           previousEntry?.taskFile ??
           toRepoRelativePath(repoDir, getPendingTaskPath(paths, taskId)),
-        draftResultFile: previousEntry?.draftResultFile,
         doneResultFile: previousEntry?.doneResultFile,
-        claimId: previousEntry?.claimId,
-        claimedAt: previousEntry?.claimedAt,
-        claimedBy: previousEntry?.claimedBy,
-        leaseUntil: previousEntry?.leaseUntil,
-        leaseExpired: previousEntry?.leaseExpired,
-        completedAt: previousEntry?.completedAt,
-        provider: previousEntry?.provider,
-        lastVerifiedAt: previousEntry?.lastVerifiedAt,
-        lastVerifyStatus: previousEntry?.lastVerifyStatus,
-        lastVerifyErrorCount: previousEntry?.lastVerifyErrorCount,
+        previousEntry,
       }),
     );
   }
@@ -903,41 +994,47 @@ async function buildPendingTaskManifestEntry(
   logger: Logger,
 ): Promise<TranslationTaskManifestEntry> {
   const task = parseTaskFile(await readJson(taskFilePath, {}));
-  const claimPath = getTaskClaimPath(paths, task.taskId);
-  const draftResultPath = getDraftResultPath(paths, task.taskId);
   const doneResultPath = getDoneResultPath(paths, task.taskId);
-  const claim = await loadClaimFile(claimPath, logger);
   const report = await loadVerificationReport(
     getVerificationReportPath(paths, task.taskId),
     logger,
   );
+  const runReport = await loadRunFailureReport(
+    getRunFailureReportPath(paths, task.taskId),
+  );
   const doneResult = await loadResultFile(doneResultPath, logger);
-  const hasDraft = await fs.pathExists(draftResultPath);
   const hasDoneResult = await fs.pathExists(doneResultPath);
-  const leaseExpired = claim ? isClaimExpired(claim) : false;
+
+  if (hasDoneResult && !doneResult) {
+    return buildInvalidManifestEntry({
+      repoDir,
+      taskId: task.taskId,
+      taskFile: toRepoRelativePath(repoDir, taskFilePath),
+      doneResultFile: toRepoRelativePath(repoDir, doneResultPath),
+      page: task.page,
+      contentCount: task.content.length,
+      previousEntry: undefined,
+    });
+  }
 
   return translationTaskManifestEntrySchema.parse({
     taskId: task.taskId,
     page: task.page,
-    status: hasDoneResult ? "done" : claim ? "in-progress" : "pending",
+    status: hasDoneResult ? "done" : "pending",
     contentCount: task.content.length,
     taskFile: toRepoRelativePath(repoDir, taskFilePath),
-    draftResultFile:
-      claim?.draftResultFile ??
-      (hasDraft ? toRepoRelativePath(repoDir, draftResultPath) : undefined),
     doneResultFile: hasDoneResult
       ? toRepoRelativePath(repoDir, doneResultPath)
       : undefined,
-    claimId: claim?.claimId,
-    claimedAt: claim?.claimedAt,
-    claimedBy: claim?.claimedBy,
-    leaseUntil: claim?.leaseUntil,
-    leaseExpired: leaseExpired || undefined,
     completedAt: doneResult?.completedAt,
     provider: doneResult?.provider,
+    model: doneResult?.model,
     lastVerifiedAt: report?.checkedAt,
     lastVerifyStatus: report ? (report.ok ? "pass" : "fail") : undefined,
     lastVerifyErrorCount: report?.errorCount,
+    lastRunAt: runReport?.failedAt,
+    lastRunStatus: runReport ? "fail" : undefined,
+    lastRunError: runReport?.message,
   });
 }
 
@@ -953,10 +1050,26 @@ async function buildAppliedTaskManifestEntry(
     getAppliedResultPath(paths.tasksAppliedDir, taskId),
     logger,
   );
+  const resultPath = getAppliedResultPath(paths.tasksAppliedDir, taskId);
   const report = await loadVerificationReport(
     getVerificationReportPath(paths, taskId),
     logger,
   );
+  const runReport = await loadRunFailureReport(
+    getRunFailureReportPath(paths, taskId),
+  );
+
+  if (!(await fs.pathExists(resultPath)) || !result) {
+    return buildInvalidManifestEntry({
+      repoDir,
+      taskId,
+      taskFile: toRepoRelativePath(repoDir, taskFilePath),
+      doneResultFile: toRepoRelativePath(repoDir, resultPath),
+      page: task.page,
+      contentCount: task.content.length,
+      previousEntry: undefined,
+    });
+  }
 
   return translationTaskManifestEntrySchema.parse({
     taskId,
@@ -972,9 +1085,13 @@ async function buildAppliedTaskManifestEntry(
       : undefined,
     completedAt: result?.completedAt,
     provider: result?.provider,
+    model: result?.model,
     lastVerifiedAt: report?.checkedAt,
     lastVerifyStatus: report ? (report.ok ? "pass" : "fail") : undefined,
     lastVerifyErrorCount: report?.errorCount,
+    lastRunAt: runReport?.failedAt,
+    lastRunStatus: runReport ? "fail" : undefined,
+    lastRunError: runReport?.message,
   });
 }
 
@@ -984,28 +1101,20 @@ function createTaskManifestSummary(
   const summary = {
     total: tasks.length,
     pending: 0,
-    inProgress: 0,
     done: 0,
     applied: 0,
     invalid: 0,
   };
 
   tasks.forEach((task) => {
-    if (task.status === "in-progress") {
-      summary.inProgress += 1;
-      return;
-    }
-
     if (task.status === "pending") {
       summary.pending += 1;
       return;
     }
-
     if (task.status === "done") {
       summary.done += 1;
       return;
     }
-
     if (task.status === "applied") {
       summary.applied += 1;
       return;
@@ -1024,9 +1133,9 @@ function renderTaskQueueBoard(manifest: TranslationTaskManifest): string {
     "This file is generated by DocuMirror. Do not edit it by hand.",
     "",
     `Generated: ${manifest.generatedAt}`,
-    `Summary: total ${manifest.summary.total}, pending ${manifest.summary.pending}, in-progress ${manifest.summary.inProgress}, done ${manifest.summary.done}, applied ${manifest.summary.applied}, invalid ${manifest.summary.invalid}`,
+    `Summary: total ${manifest.summary.total}, pending ${manifest.summary.pending}, done ${manifest.summary.done}, applied ${manifest.summary.applied}, invalid ${manifest.summary.invalid}`,
     "",
-    "Claim the next task with `documirror translate claim --repo .`.",
+    "Run automatic translation with `documirror translate run --repo .`.",
     "",
     "## Tasks",
   ];
@@ -1040,12 +1149,6 @@ function renderTaskQueueBoard(manifest: TranslationTaskManifest): string {
     const checkbox =
       task.status === "done" || task.status === "applied" ? "[x]" : "[ ]";
     const title = task.page.title ? ` | ${task.page.title}` : "";
-    const claim =
-      task.claimedBy || task.leaseUntil
-        ? ` | claim ${task.claimedBy ?? "unknown"}${
-            task.leaseUntil ? ` until ${task.leaseUntil}` : ""
-          }${task.leaseExpired ? " (expired)" : ""}`
-        : "";
     const verify =
       task.lastVerifyStatus === undefined
         ? ""
@@ -1054,12 +1157,57 @@ function renderTaskQueueBoard(manifest: TranslationTaskManifest): string {
               ? ` (${task.lastVerifyErrorCount} errors)`
               : ""
           }`;
+    const run =
+      task.lastRunStatus === "fail" && task.lastRunError
+        ? ` | last run failed: ${task.lastRunError}`
+        : "";
     lines.push(
-      `- ${checkbox} ${task.taskId} | ${task.status} | ${task.contentCount} items${title} | ${task.page.url}${claim}${verify}`,
+      `- ${checkbox} ${task.taskId} | ${task.status} | ${task.contentCount} items${title} | ${task.page.url}${verify}${run}`,
     );
   });
 
   return `${lines.join("\n")}\n`;
+}
+
+function buildInvalidManifestEntry(options: {
+  repoDir: string;
+  taskId: string;
+  taskFile: string;
+  doneResultFile?: string;
+  page?: TranslationTaskManifestEntry["page"];
+  contentCount?: number;
+  previousEntry?: TranslationTaskManifestEntry;
+}): TranslationTaskManifestEntry {
+  const {
+    repoDir,
+    taskId,
+    taskFile,
+    doneResultFile,
+    page,
+    contentCount,
+    previousEntry,
+  } = options;
+
+  return translationTaskManifestEntrySchema.parse({
+    taskId,
+    page: page ?? previousEntry?.page ?? { url: "" },
+    status: "invalid",
+    contentCount: contentCount ?? previousEntry?.contentCount ?? 0,
+    taskFile:
+      taskFile ||
+      previousEntry?.taskFile ||
+      toRepoRelativePath(repoDir, taskFile),
+    doneResultFile: doneResultFile ?? previousEntry?.doneResultFile,
+    completedAt: previousEntry?.completedAt,
+    provider: previousEntry?.provider,
+    model: previousEntry?.model,
+    lastVerifiedAt: previousEntry?.lastVerifiedAt,
+    lastVerifyStatus: previousEntry?.lastVerifyStatus,
+    lastVerifyErrorCount: previousEntry?.lastVerifyErrorCount,
+    lastRunAt: previousEntry?.lastRunAt,
+    lastRunStatus: previousEntry?.lastRunStatus,
+    lastRunError: previousEntry?.lastRunError,
+  });
 }
 
 function compareManifestEntries(
@@ -1113,7 +1261,7 @@ function validateTaskFreshness(
       if (!currentSegment) {
         issues.push({
           code: "task_segment_missing",
-          message: `Task ${task.taskId} is stale because segment ${segmentRef.segmentId} no longer exists; rerun translate plan and claim a new task`,
+          message: `Task ${task.taskId} is stale because segment ${segmentRef.segmentId} no longer exists; rerun translate plan`,
           jsonPath: `$.content[${contentIndex}]`,
         });
         return;
@@ -1122,7 +1270,7 @@ function validateTaskFreshness(
       if (currentSegment.sourceHash !== segmentRef.sourceHash) {
         issues.push({
           code: "task_stale",
-          message: `Task ${task.taskId} is stale because segment ${segmentRef.segmentId} changed; rerun translate plan and claim a new task`,
+          message: `Task ${task.taskId} is stale because segment ${segmentRef.segmentId} changed; rerun translate plan`,
           jsonPath: `$.content[${contentIndex}]`,
         });
       }
@@ -1380,9 +1528,7 @@ function validatePlaceholderTokens(
   return [
     {
       code: "placeholder_mismatch",
-      message: `Translation must preserve placeholders ${JSON.stringify(
-        sourceTokens,
-      )} exactly`,
+      message: `Translation must preserve placeholders ${JSON.stringify(sourceTokens)} exactly`,
       jsonPath,
     },
   ];
@@ -1510,11 +1656,6 @@ function areStringMultisetsEqual(left: string[], right: string[]): boolean {
   });
   right.forEach((value) => {
     const next = (counts.get(value) ?? 0) - 1;
-    if (next < 0) {
-      counts.set(value, next);
-      return;
-    }
-
     counts.set(value, next);
   });
 
@@ -1597,7 +1738,7 @@ function createIssuesFromUnknownError(
     return [
       {
         code: "json_invalid",
-        message: `Draft result file is not valid JSON: ${error.message}`,
+        message: `Result file is not valid JSON: ${error.message}`,
         jsonPath: rootPath,
       },
     ];
@@ -1775,20 +1916,6 @@ function getPendingTaskPath(
   return join(paths.tasksPendingDir, `${taskId}.json`);
 }
 
-function getDraftResultPath(
-  paths: ReturnType<typeof getRepoPaths>,
-  taskId: string,
-): string {
-  return join(paths.tasksInProgressDir, `${taskId}.result.json`);
-}
-
-function getTaskClaimPath(
-  paths: ReturnType<typeof getRepoPaths>,
-  taskId: string,
-): string {
-  return join(paths.tasksInProgressDir, `${taskId}.claim.json`);
-}
-
 function getDoneResultPath(
   paths: ReturnType<typeof getRepoPaths>,
   taskId: string,
@@ -1803,12 +1930,27 @@ function getVerificationReportPath(
   return join(paths.reportsDir, VERIFY_REPORT_DIR, `${taskId}.json`);
 }
 
+function getRunFailureReportPath(
+  paths: ReturnType<typeof getRepoPaths>,
+  taskId: string,
+): string {
+  return join(paths.reportsDir, RUN_REPORT_DIR, `${taskId}.json`);
+}
+
 function getTaskMappingPath(taskMappingsDir: string, taskId: string): string {
   return join(taskMappingsDir, `${taskId}.json`);
 }
 
 function getAppliedTaskPath(tasksAppliedDir: string, taskId: string): string {
   return join(tasksAppliedDir, `${taskId}.task.json`);
+}
+
+function getAppliedTaskHistoryPath(
+  tasksAppliedHistoryDir: string,
+  taskId: string,
+  archiveStamp: string,
+): string {
+  return join(tasksAppliedHistoryDir, `${taskId}--${archiveStamp}.task.json`);
 }
 
 function getAppliedTaskMappingPath(
@@ -1818,8 +1960,27 @@ function getAppliedTaskMappingPath(
   return join(tasksAppliedDir, `${taskId}.mapping.json`);
 }
 
+function getAppliedTaskMappingHistoryPath(
+  tasksAppliedHistoryDir: string,
+  taskId: string,
+  archiveStamp: string,
+): string {
+  return join(
+    tasksAppliedHistoryDir,
+    `${taskId}--${archiveStamp}.mapping.json`,
+  );
+}
+
 function getAppliedResultPath(tasksAppliedDir: string, taskId: string): string {
   return join(tasksAppliedDir, `${taskId}.json`);
+}
+
+function getAppliedResultHistoryPath(
+  tasksAppliedHistoryDir: string,
+  taskId: string,
+  archiveStamp: string,
+): string {
+  return join(tasksAppliedHistoryDir, `${taskId}--${archiveStamp}.json`);
 }
 
 function getTaskIdFromPath(filePath: string): string {
@@ -1828,6 +1989,42 @@ function getTaskIdFromPath(filePath: string): string {
 
 function toRepoRelativePath(repoDir: string, filePath: string): string {
   return relative(repoDir, filePath);
+}
+
+async function loadTaskArtifacts(
+  paths: ReturnType<typeof getRepoPaths>,
+  taskId: string,
+): Promise<{
+  task: TranslationTaskFile;
+  mapping: TranslationTaskMappingFile;
+}> {
+  const pendingTaskPath = getPendingTaskPath(paths, taskId);
+  const appliedTaskPath = getAppliedTaskPath(paths.tasksAppliedDir, taskId);
+  const taskPath = (await fs.pathExists(pendingTaskPath))
+    ? pendingTaskPath
+    : appliedTaskPath;
+  if (!(await fs.pathExists(taskPath))) {
+    throw new Error(
+      `Task ${taskId} is not available under pending or applied tasks`,
+    );
+  }
+
+  const pendingMappingPath = getTaskMappingPath(paths.taskMappingsDir, taskId);
+  const appliedMappingPath = getAppliedTaskMappingPath(
+    paths.tasksAppliedDir,
+    taskId,
+  );
+  const mappingPath = (await fs.pathExists(pendingMappingPath))
+    ? pendingMappingPath
+    : appliedMappingPath;
+  if (!(await fs.pathExists(mappingPath))) {
+    throw new Error(`Task mapping for ${taskId} is missing or unreadable`);
+  }
+
+  return {
+    task: parseTaskFile(await readJson(taskPath, {})),
+    mapping: parseTaskMappingFile(await readJson(mappingPath, {})),
+  };
 }
 
 async function loadRequiredTaskMapping(
@@ -1883,31 +2080,12 @@ function createEmptyTaskManifest(
     summary: {
       total: 0,
       pending: 0,
-      inProgress: 0,
       done: 0,
       applied: 0,
       invalid: 0,
     },
     tasks: [],
   });
-}
-
-async function loadClaimFile(
-  filePath: string,
-  logger: Logger,
-): Promise<NormalizedTaskClaimFile | null> {
-  if (!(await fs.pathExists(filePath))) {
-    return null;
-  }
-
-  try {
-    return normalizeClaimFile(
-      translationTaskClaimFileSchema.parse(await readJson(filePath, {})),
-    );
-  } catch (error) {
-    logger.warn(`Ignoring unreadable claim file ${filePath}: ${String(error)}`);
-    return null;
-  }
 }
 
 async function loadVerificationReport(
@@ -1948,154 +2126,38 @@ async function loadResultFile(
   }
 }
 
-async function reclaimExpiredTaskClaims(
-  paths: ReturnType<typeof getRepoPaths>,
-  logger: Logger,
-  options: {
-    dropDraft?: boolean;
-  } = {},
-): Promise<{
-  taskIds: string[];
-  removedDraftCount: number;
-}> {
-  const claimFiles = await fg("*.claim.json", {
-    cwd: paths.tasksInProgressDir,
-    absolute: true,
-  });
-  const taskIds: string[] = [];
-  let removedDraftCount = 0;
-
-  for (const claimPath of claimFiles.sort()) {
-    const claim = await loadClaimFile(claimPath, logger);
-    if (!claim || !isClaimExpired(claim)) {
-      continue;
-    }
-
-    await fs.remove(claimPath);
-    await fs.remove(getVerificationReportPath(paths, claim.taskId));
-    if (options.dropDraft) {
-      await fs.remove(getDraftResultPath(paths, claim.taskId));
-      removedDraftCount += 1;
-    }
-    taskIds.push(claim.taskId);
-  }
-
-  return {
-    taskIds,
-    removedDraftCount,
-  };
-}
-
-function normalizeClaimFile(
-  claim: TranslationTaskClaimFile,
-): NormalizedTaskClaimFile {
-  return {
-    ...claim,
-    schemaVersion: 2,
-    claimId: claim.claimId ?? claim.taskId,
-    claimedBy: claim.claimedBy ?? "unknown",
-    leaseUntil: claim.leaseUntil ?? claim.claimedAt,
-  };
-}
-
-function isClaimExpired(
-  claim: Pick<NormalizedTaskClaimFile, "leaseUntil">,
-  now = new Date(),
-): boolean {
-  return new Date(claim.leaseUntil).getTime() <= now.getTime();
-}
-
-function normalizeLeaseMinutes(leaseMinutes?: number): number {
-  if (
-    typeof leaseMinutes !== "number" ||
-    !Number.isFinite(leaseMinutes) ||
-    leaseMinutes <= 0
-  ) {
-    return DEFAULT_TASK_LEASE_MINUTES;
-  }
-
-  return Math.floor(leaseMinutes);
-}
-
-async function tryClaimTask(
-  repoDir: string,
-  paths: ReturnType<typeof getRepoPaths>,
-  options: {
-    taskId: string;
-    workerId: string;
-    leaseMinutes: number;
-  },
-): Promise<ClaimSummary | null> {
-  const taskPath = getPendingTaskPath(paths, options.taskId);
-  const claimPath = getTaskClaimPath(paths, options.taskId);
-  const doneResultPath = getDoneResultPath(paths, options.taskId);
-  if (
-    !(await fs.pathExists(taskPath)) ||
-    (await fs.pathExists(doneResultPath))
-  ) {
+async function loadRunFailureReport(
+  filePath: string,
+): Promise<RunFailureReport | null> {
+  if (!(await fs.pathExists(filePath))) {
     return null;
   }
 
-  const task = parseTaskFile(await readJson(taskPath, {}));
-  const claimedAt = createTimestamp();
-  const leaseUntil = new Date(
-    Date.now() + options.leaseMinutes * 60_000,
-  ).toISOString();
-  const draftResultPath = getDraftResultPath(paths, options.taskId);
-  const taskFile = toRepoRelativePath(repoDir, taskPath);
-  const draftResultFile = toRepoRelativePath(repoDir, draftResultPath);
-  const claim = normalizeClaimFile(
-    translationTaskClaimFileSchema.parse({
-      schemaVersion: 2,
-      taskId: options.taskId,
-      claimedAt,
-      taskFile,
-      draftResultFile,
-      claimId: `claim_${nanoid(10)}`,
-      claimedBy: options.workerId,
-      leaseUntil,
-    }),
-  );
-
-  let handle;
   try {
-    handle = await open(claimPath, "wx");
-    await handle.writeFile(`${JSON.stringify(claim, null, 2)}\n`, "utf8");
-  } catch (error) {
-    await handle?.close();
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "EEXIST"
-    ) {
-      return null;
-    }
-
-    await fs.remove(claimPath);
-    throw error;
+    return (await readJson(filePath, null)) as RunFailureReport | null;
+  } catch {
+    return null;
   }
-  await handle.close();
+}
 
-  if (!(await fs.pathExists(draftResultPath))) {
-    await writeJson(draftResultPath, {
-      schemaVersion: 2,
-      taskId: options.taskId,
-      translations: task.content.map((item) => ({
-        id: item.id,
-        translatedText: "",
-      })),
-    });
-  }
-
-  await fs.remove(getVerificationReportPath(paths, options.taskId));
-  return {
-    taskId: options.taskId,
-    taskFile,
-    draftResultFile,
-    claimedBy: claim.claimedBy,
-    leaseUntil: claim.leaseUntil,
+async function writeRunFailureReport(
+  paths: ReturnType<typeof getRepoPaths>,
+  taskId: string,
+  attemptCount: number,
+  errors: TranslationVerificationIssue[],
+  resultPreview: string | undefined,
+  message: string,
+): Promise<void> {
+  const report: RunFailureReport = {
+    schemaVersion: 1,
+    taskId,
+    failedAt: createTimestamp(),
+    attemptCount,
+    resultPreview,
+    errors,
+    message,
   };
+  await writeJson(getRunFailureReportPath(paths, taskId), report);
 }
 
 async function removePendingTaskBundle(
@@ -2106,52 +2168,74 @@ async function removePendingTaskBundle(
   await fs.remove(taskFilePath);
   if (taskId) {
     await fs.remove(getTaskMappingPath(paths.taskMappingsDir, taskId));
-    await fs.remove(getTaskClaimPath(paths, taskId));
-    await fs.remove(getDraftResultPath(paths, taskId));
     await fs.remove(getDoneResultPath(paths, taskId));
     await fs.remove(getVerificationReportPath(paths, taskId));
+    await fs.remove(getRunFailureReportPath(paths, taskId));
   }
 }
 
 async function archivePendingTaskFile(
   paths: ReturnType<typeof getRepoPaths>,
   taskId: string,
+  archiveStamp: string,
 ): Promise<void> {
   const pendingTaskPath = getPendingTaskPath(paths, taskId);
   if (!(await fs.pathExists(pendingTaskPath))) {
     return;
   }
 
-  await fs.move(
+  await fs.copy(
     pendingTaskPath,
     getAppliedTaskPath(paths.tasksAppliedDir, taskId),
     {
       overwrite: true,
     },
   );
+  await fs.copy(
+    pendingTaskPath,
+    getAppliedTaskHistoryPath(
+      paths.tasksAppliedHistoryDir,
+      taskId,
+      archiveStamp,
+    ),
+  );
+  await fs.remove(pendingTaskPath);
 }
 
 async function archiveTaskMapping(
-  taskMappingsDir: string,
-  tasksAppliedDir: string,
   taskId: string,
+  paths: ReturnType<typeof getRepoPaths>,
+  archiveStamp: string,
 ): Promise<void> {
-  const mappingPath = getTaskMappingPath(taskMappingsDir, taskId);
+  const mappingPath = getTaskMappingPath(paths.taskMappingsDir, taskId);
   if (!(await fs.pathExists(mappingPath))) {
     return;
   }
 
-  await fs.move(
+  await fs.copy(
     mappingPath,
-    getAppliedTaskMappingPath(tasksAppliedDir, taskId),
+    getAppliedTaskMappingPath(paths.tasksAppliedDir, taskId),
     {
       overwrite: true,
     },
   );
+  await fs.copy(
+    mappingPath,
+    getAppliedTaskMappingHistoryPath(
+      paths.tasksAppliedHistoryDir,
+      taskId,
+      archiveStamp,
+    ),
+  );
+  await fs.remove(mappingPath);
 }
 
 function isSerializedEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function parseCandidateResult(body: string): TranslationResultFile {
+  return parseResultFile(JSON.parse(body));
 }
 
 function parseInlineCodeSpans(
@@ -2198,4 +2282,98 @@ function countBackticks(value: string, startIndex: number): number {
   }
 
   return length;
+}
+
+function createTaskId(pageUrl: string): string {
+  return `task_${hashString(pageUrl).slice(0, 10)}`;
+}
+
+function createArchiveStamp(timestamp: string): string {
+  return timestamp.replace(/[:.]/gu, "-");
+}
+
+async function archiveDoneResultFile(
+  paths: ReturnType<typeof getRepoPaths>,
+  taskId: string,
+  resultPath: string,
+  archiveStamp: string,
+): Promise<void> {
+  if (!(await fs.pathExists(resultPath))) {
+    return;
+  }
+
+  await fs.copy(
+    resultPath,
+    getAppliedResultPath(paths.tasksAppliedDir, taskId),
+    {
+      overwrite: true,
+    },
+  );
+  await fs.copy(
+    resultPath,
+    getAppliedResultHistoryPath(
+      paths.tasksAppliedHistoryDir,
+      taskId,
+      archiveStamp,
+    ),
+  );
+  await fs.remove(resultPath);
+}
+
+function createRunDebugEmitter(
+  onDebug?: (message: string) => void,
+): (message: string) => void {
+  if (!onDebug) {
+    return () => {};
+  }
+
+  return (message: string) => {
+    onDebug(message);
+  };
+}
+
+function formatIssueSummary(
+  issue: TranslationVerificationIssue | undefined,
+): string {
+  if (!issue) {
+    return "unknown error";
+  }
+
+  return `[${issue.code}] ${issue.message}`;
+}
+
+function formatRunDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes === 0) {
+    return `${totalSeconds}s`;
+  }
+
+  return `${minutes}m ${seconds}s`;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error(String(signal.reason));
+  }
+}
+
+function isAbortLikeError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+
+  if (error instanceof Error) {
+    return (
+      error.name === "AbortError" ||
+      error.name === "APIUserAbortError" ||
+      error.message === "Request was aborted."
+    );
+  }
+
+  return false;
 }

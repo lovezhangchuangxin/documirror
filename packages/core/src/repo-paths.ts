@@ -9,6 +9,8 @@ export function getRepoPaths(repoDir: string): RepoPaths {
 
   return {
     docuRoot,
+    envPath: join(repoDir, ".env"),
+    gitIgnorePath: join(repoDir, ".gitignore"),
     configPath: join(docuRoot, "config.json"),
     manifestPath: join(docuRoot, "state", "manifest.json"),
     assemblyPath: join(docuRoot, "state", "assembly.json"),
@@ -24,6 +26,7 @@ export function getRepoPaths(repoDir: string): RepoPaths {
     tasksInProgressDir: join(docuRoot, "tasks", "in-progress"),
     tasksDoneDir: join(docuRoot, "tasks", "done"),
     tasksAppliedDir: join(docuRoot, "tasks", "applied"),
+    tasksAppliedHistoryDir: join(docuRoot, "tasks", "applied", "history"),
     reportsDir: join(repoDir, "reports"),
   };
 }

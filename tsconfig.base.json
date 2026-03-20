@@ -21,6 +21,9 @@
       "@documirror/adapters-filequeue": [
         "./packages/adapters-filequeue/src/index.ts"
       ],
+      "@documirror/adapters-openai": [
+        "./packages/adapters-openai/src/index.ts"
+      ],
       "@documirror/site-builder": ["./packages/site-builder/src/index.ts"],
       "@documirror/templates": ["./packages/templates/src/index.ts"]
     }

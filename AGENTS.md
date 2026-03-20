@@ -17,8 +17,9 @@ The current implementation is designed to:
 
 - crawl a source documentation site
 - extract translatable HTML text and attributes
-- export translation task files for third-party AI agents
-- import translated results
+- export page-based translation task files
+- call a configured OpenAI-compatible API to translate those tasks automatically
+- validate translation results
 - rebuild translated HTML into a deployable static mirror
 
 ## Active Scope
@@ -28,14 +29,16 @@ Treat these as current product constraints unless the task explicitly changes th
 - static-HTML-first documentation sites
 - one source site per mirror repository
 - one target locale per mirror repository
+- one configured LLM endpoint per mirror repository
 - file-based translation workflow
 - local JSON/JSONL state under `.documirror/`
+- token storage in repository-local `.env`
 
 Do not assume support for:
 
 - login-protected sites
 - browser-rendered SPA crawling
-- built-in direct invocation of Claude Code, Codex, or other CLIs
+- built-in provider-specific APIs beyond OpenAI-compatible chat completions
 - multi-locale mirror repositories
 
 ## Tech Stack
@@ -49,13 +52,14 @@ Do not assume support for:
 - `cheerio` for HTML parsing
 - `zod` for schemas and validation
 - `vitest` for tests
+- `openai` npm package for OpenAI-compatible LLM calls
 
 ## Package Responsibilities
 
 - `packages/cli`
-  CLI entrypoint and command wiring
+  CLI entrypoint and interactive command wiring
 - `packages/core`
-  orchestration, repository state, and pipeline commands
+  orchestration, repository state, validation, and pipeline commands
 - `packages/crawler`
   page and asset crawling
 - `packages/parser`
@@ -63,7 +67,9 @@ Do not assume support for:
 - `packages/i18n`
   translation state and incremental logic
 - `packages/adapters-filequeue`
-  translation task export/import protocol
+  task/result file serialization helpers
+- `packages/adapters-openai`
+  OpenAI-compatible API calls, connection tests, and LLM request shaping
 - `packages/site-builder`
   translated HTML assembly and site output
 - `packages/shared`
@@ -77,12 +83,13 @@ These behaviors are central to the current design and should be preserved unless
 
 - `segmentId` identifies a stable extraction binding for a page + DOM path + kind.
 - `sourceHash` represents the normalized source content used for incremental translation decisions.
-- external task/result files may use agent-friendly short item IDs, but core state must map them back to `segmentId` and `sourceHash` internally.
+- task/result files may use short item IDs, but core state must map them back to `segmentId` and `sourceHash` internally.
 - `translate plan` must only export segments that are new, stale, or missing accepted translations.
+- `translate run` must validate model output before writing final result files.
 - `translate apply` must reject stale results whose `sourceHash` no longer matches the current source segment.
-- `core` owns orchestration; feature logic should not be pushed into `cli`.
+- core owns orchestration; CLI should remain thin and interactive.
 - shared schemas belong in `packages/shared`.
-- translation-provider coupling should not leak into core workflow for v0.1; prefer the file-queue adapter unless the task explicitly expands the design.
+- provider-specific request handling should stay inside `packages/adapters-openai`, not leak across packages.
 
 ## Engineering Rules
 
@@ -93,6 +100,7 @@ These behaviors are central to the current design and should be preserved unless
 - Avoid browser automation or heavy runtime dependencies without a clear need.
 - Match the existing ESM and TypeScript style.
 - If a feature changes the task or result JSON contract, update both schemas and documentation.
+- Keep auth token handling centered on `.env`; do not move tokens into `.documirror/config.json` by default.
 
 ## Repository Workflow
 
@@ -120,9 +128,9 @@ Commit messages must use the `type(scope): subject` format.
 Examples:
 
 ```text
-feat(core): add incremental translation planner
-fix(cli): validate repo path
-docs(repo): rewrite contribution guide
+feat(core): add automatic api translation runner
+fix(cli): validate ai connection before saving config
+docs(repo): rewrite workflow guide
 ```
 
 Use conventional commit types supported by `commitlint`, and always include a scope.
@@ -140,17 +148,19 @@ Allowed scopes:
 - `site-builder`
 - `templates`
 - `adapters-filequeue`
+- `adapters-openai`
 
 If a change spans multiple packages, choose the narrowest scope that best represents the primary impact.
 
 ## Where To Put Changes
 
 - New CLI flags or commands: `packages/cli`
-- Pipeline orchestration or repository storage: `packages/core`
+- Pipeline orchestration, validation, `.env` handling, or repository storage: `packages/core`
+- OpenAI-compatible request/response behavior: `packages/adapters-openai`
 - HTML discovery or fetching behavior: `packages/crawler`
 - Extraction heuristics or DOM path logic: `packages/parser`
 - Incremental translation planning or state: `packages/i18n`
-- Task file protocol changes: `packages/adapters-filequeue` and `packages/shared`
+- Task/result file contract changes: `packages/adapters-filequeue` and `packages/shared`
 - HTML reinsertion or output behavior: `packages/site-builder`
 - Shared types, config schemas, or utilities: `packages/shared`
 
@@ -179,6 +189,7 @@ Update documentation when changing:
 - CLI commands or flags
 - repository structure
 - task or result JSON shape
+- AI configuration shape or `.env` behavior
 - supported site scope
 - major workflow assumptions
 - repository conventions such as hooks or commit rules
@@ -219,8 +230,9 @@ The current codebase is an initial foundation, not a complete production crawler
 
 - site-specific profiles for common docs frameworks
 - stronger placeholder and inline-markup protection
+- richer model prompt controls
+- optional model fallback strategies
 - better asset and link normalization
 - richer health reports
-- optional direct adapters for external translation CLIs
 
 Prefer incremental additions over large rewrites.

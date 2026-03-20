@@ -23,12 +23,8 @@ export async function getMirrorStatus(repoDir: string): Promise<MirrorStatus> {
       (translation) => translation.status === "stale",
     ).length,
     pendingTaskCount: taskManifest.summary.pending,
-    inProgressTaskCount: taskManifest.summary.inProgress,
     doneTaskCount: taskManifest.summary.done,
     appliedTaskCount: taskManifest.summary.applied,
     invalidTaskCount: taskManifest.summary.invalid,
-    expiredLeaseTaskCount: taskManifest.tasks.filter(
-      (task) => task.status === "in-progress" && task.leaseExpired,
-    ).length,
   };
 }
