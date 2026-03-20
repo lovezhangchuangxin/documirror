@@ -21,6 +21,7 @@ import type {
   CrawledAsset,
   CrawledPage,
   CrawlIssue,
+  CrawlProgress,
   CrawlResult,
   CrawlSink,
   CrawlStats,
@@ -43,6 +44,15 @@ export async function crawlWebsite(
   };
   let pageCount = 0;
   let assetCount = 0;
+
+  const reportProgress = (kind: CrawlProgress["kind"], url?: string) => {
+    sink.onProgress?.({
+      kind,
+      pageCount,
+      assetCount,
+      url,
+    });
+  };
 
   const recordIssue = (issue: CrawlIssue) => {
     issues.push(issue);
@@ -74,6 +84,7 @@ export async function crawlWebsite(
     });
   };
 
+  reportProgress("start");
   const {
     robots,
     issue: robotsIssue,
@@ -167,6 +178,7 @@ export async function crawlWebsite(
       };
 
       assetCount += 1;
+      reportProgress("asset", normalized);
       await sink.onAsset?.(asset);
     });
   };
@@ -279,6 +291,7 @@ export async function crawlWebsite(
       };
 
       pageCount += 1;
+      reportProgress("page", normalized);
       await sink.onPage?.(page);
     });
   };

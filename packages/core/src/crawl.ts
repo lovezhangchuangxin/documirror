@@ -15,11 +15,12 @@ import {
 
 import { getRepoPaths } from "./repo-paths";
 import { ensureRepoStructure, loadConfig, writeJson } from "./storage";
-import type { CrawlSummary } from "./types";
+import type { CrawlProgressUpdate, CrawlSummary } from "./types";
 
 export async function crawlMirror(
   repoDir: string,
   logger: Logger = defaultLogger,
+  onProgress?: (progress: CrawlProgressUpdate) => void,
 ): Promise<CrawlSummary> {
   const paths = getRepoPaths(repoDir);
   await ensureRepoStructure(paths);
@@ -34,6 +35,9 @@ export async function crawlMirror(
   const writeLimit = pLimit(Math.max(1, Math.min(config.crawlConcurrency, 8)));
 
   const crawlResult = await crawlWebsite(config, logger, {
+    onProgress(progress) {
+      onProgress?.(progress);
+    },
     onPage(page) {
       return writeLimit(async () => {
         const snapshotRelativePath = relative(

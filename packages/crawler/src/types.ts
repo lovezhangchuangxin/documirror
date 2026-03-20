@@ -46,6 +46,15 @@ export type CrawlStats = {
   robotsFailures: number;
 };
 
+export type CrawlProgressKind = "start" | "page" | "asset";
+
+export type CrawlProgress = {
+  kind: CrawlProgressKind;
+  pageCount: number;
+  assetCount: number;
+  url?: string;
+};
+
 export type CrawlResult = {
   pageCount: number;
   assetCount: number;
@@ -60,6 +69,7 @@ export type RobotsLike = {
 export type CrawlSink = {
   onPage?: (page: CrawledPage) => void | Promise<void>;
   onAsset?: (asset: CrawledAsset) => void | Promise<void>;
+  onProgress?: (progress: CrawlProgress) => void;
 };
 
 export type InvalidLinkReference = {

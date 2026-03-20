@@ -15,6 +15,11 @@ vi.mock("@documirror/crawler", () => ({
 import { crawlMirror, initMirrorRepository } from "@documirror/core";
 
 const createdDirs: string[] = [];
+const silentLogger = {
+  info() {},
+  warn() {},
+  error() {},
+};
 
 describe("crawlMirror", () => {
   afterEach(async () => {
@@ -163,5 +168,76 @@ describe("crawlMirror", () => {
 
     expect(await readFile(snapshotPath, "utf8")).toContain("Home");
     expect(await readFile(assetPath)).toEqual(Buffer.from("png"));
+  });
+
+  it("forwards crawl progress updates from the crawler", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-crawl-progress-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com/",
+      targetLocale: "zh-CN",
+    });
+
+    crawlWebsiteMock.mockImplementation(
+      async (
+        _config: unknown,
+        _logger: unknown,
+        sink: {
+          onProgress?: (progress: {
+            kind: "start" | "page" | "asset";
+            pageCount: number;
+            assetCount: number;
+            url?: string;
+          }) => void;
+        },
+      ) => {
+        sink.onProgress?.({
+          kind: "start",
+          pageCount: 0,
+          assetCount: 0,
+        });
+        sink.onProgress?.({
+          kind: "page",
+          pageCount: 1,
+          assetCount: 0,
+          url: "https://docs.example.com/",
+        });
+
+        return {
+          pageCount: 1,
+          assetCount: 0,
+          issues: [],
+          stats: {
+            pageFailures: 0,
+            assetFailures: 0,
+            invalidLinks: 0,
+            skippedByRobots: 0,
+            retriedRequests: 0,
+            timedOutRequests: 0,
+            robotsFailures: 0,
+          },
+        };
+      },
+    );
+
+    const onProgress = vi.fn();
+    const summary = await crawlMirror(repoDir, silentLogger, onProgress);
+
+    expect(summary.pageCount).toBe(1);
+    expect(onProgress.mock.calls.map(([progress]) => progress)).toEqual([
+      {
+        kind: "start",
+        pageCount: 0,
+        assetCount: 0,
+      },
+      {
+        kind: "page",
+        pageCount: 1,
+        assetCount: 0,
+        url: "https://docs.example.com/",
+      },
+    ]);
   });
 });

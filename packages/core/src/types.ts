@@ -1,4 +1,8 @@
-import type { CrawlIssue, CrawlStats } from "@documirror/crawler";
+import type {
+  CrawlIssue,
+  CrawlProgress,
+  CrawlStats,
+} from "@documirror/crawler";
 import type { Logger } from "@documirror/shared";
 
 export type RepoPaths = {
@@ -33,6 +37,8 @@ export type CrawlSummary = {
   issues: CrawlIssue[];
   stats: CrawlStats;
 };
+
+export type CrawlProgressUpdate = CrawlProgress;
 
 export type ExtractSummary = {
   pageCount: number;

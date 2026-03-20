@@ -166,6 +166,65 @@ describe("crawlWebsite", () => {
     expect(result.pageCount).toBe(2);
     expect(result.assetCount).toBe(0);
   });
+
+  it("reports live page and asset counts while crawling", async () => {
+    const onProgress = vi.fn();
+
+    axiosGetMock.mockImplementation(async (url: string) => {
+      switch (url) {
+        case "https://docs.example.com/robots.txt":
+          return textResponse("User-agent: *\nAllow: /\n");
+        case "https://docs.example.com/":
+          return htmlResponse(
+            `<!doctype html><html><body><a href="/guide">Guide</a><img src="/hero.png"></body></html>`,
+          );
+        case "https://docs.example.com/guide":
+          return htmlResponse(
+            `<!doctype html><html><body><h1>Guide</h1></body></html>`,
+          );
+        case "https://docs.example.com/hero.png":
+          return assetResponse();
+        default:
+          throw new Error(`Unexpected URL: ${url}`);
+      }
+    });
+
+    const result = await crawlWebsite(
+      createConfig("https://docs.example.com/", 1),
+      silentLogger,
+      {
+        onProgress,
+      },
+    );
+
+    expect(result.pageCount).toBe(2);
+    expect(result.assetCount).toBe(1);
+    expect(onProgress.mock.calls.map(([progress]) => progress)).toEqual([
+      {
+        kind: "start",
+        pageCount: 0,
+        assetCount: 0,
+      },
+      {
+        kind: "page",
+        pageCount: 1,
+        assetCount: 0,
+        url: "https://docs.example.com/",
+      },
+      {
+        kind: "asset",
+        pageCount: 1,
+        assetCount: 1,
+        url: "https://docs.example.com/hero.png",
+      },
+      {
+        kind: "page",
+        pageCount: 2,
+        assetCount: 1,
+        url: "https://docs.example.com/guide",
+      },
+    ]);
+  });
 });
 
 function createConfig(

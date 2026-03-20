@@ -4,17 +4,23 @@ import { defaultLogger } from "@documirror/shared";
 import { crawlMirror } from "./crawl";
 import { extractMirror } from "./extract";
 import { planTranslations } from "./translate";
-import type { CrawlSummary, ExtractSummary, PlanSummary } from "./types";
+import type {
+  CrawlProgressUpdate,
+  CrawlSummary,
+  ExtractSummary,
+  PlanSummary,
+} from "./types";
 
 export async function updateMirror(
   repoDir: string,
   logger: Logger = defaultLogger,
+  onCrawlProgress?: (progress: CrawlProgressUpdate) => void,
 ): Promise<{
   crawl: CrawlSummary;
   extract: ExtractSummary;
   plan: PlanSummary;
 }> {
-  const crawl = await crawlMirror(repoDir, logger);
+  const crawl = await crawlMirror(repoDir, logger, onCrawlProgress);
   const extract = await extractMirror(repoDir, logger);
   const plan = await planTranslations(repoDir, logger);
   return { crawl, extract, plan };
