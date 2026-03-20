@@ -4,7 +4,7 @@
 
 DocuMirror 是一个 TypeScript monorepo，用来构建静态文档站的翻译镜像。
 
-它会抓取源文档站，抽取 HTML 中可翻译的文本和属性，生成按页面组织的翻译任务文件，直接调用 OpenAI 兼容 API 自动翻译，校验结果，然后把翻译内容重新装配回 HTML，最终生成可部署的静态镜像站。
+它会抓取源文档站，抽取 HTML 中可翻译的文本和属性，生成按页面组织的翻译任务文件，并在页面过大时于运行时拆成少数几个翻译分片，校验结果，然后把翻译内容重新装配回 HTML，最终生成可部署的静态镜像站。
 
 仓库约定与贡献规则见 [AGENTS.md](./AGENTS.md)。
 
@@ -247,6 +247,11 @@ node packages/cli/dist/index.mjs status --repo ./my-mirror
 - `requestTimeoutMs`
 - `maxAttemptsPerTask`
 - `temperature`
+- `chunking.enabled`
+- `chunking.strategy`
+- `chunking.maxItemsPerChunk`
+- `chunking.softMaxSourceCharsPerChunk`
+- `chunking.hardMaxSourceCharsPerChunk`
 
 `init` 和 `config ai` 在保存前都会先做一次真实连通性测试。
 
@@ -292,7 +297,7 @@ node packages/cli/dist/index.mjs status --repo ./my-mirror
 - `completedAt`
 - 按短 ID 对应的译文项
 
-`translate run` 会把 task、glossary 和校验错误一起喂给模型，在模型输出 JSON 非法或校验失败时自动重试修复。现在会优先使用流式 chat completion，在 provider 不支持时自动回退到非流式，并把默认 AI 请求超时提高到更适合大任务的级别。加上 `--debug` 后，还会输出 task 加载、请求发起、首个流式内容到达、响应完成、校验重试和结果写入这些阶段日志。`translate apply` 会把短 ID 映射回内部 `segmentId` 和 `sourceHash`，再次校验 schema，并且只接受 `sourceHash` 仍与当前源内容一致的翻译。
+`translate run` 会把 task、glossary 和校验错误一起喂给模型，在模型输出 JSON 非法或校验失败时自动重试修复。现在会优先使用流式 chat completion，在 provider 不支持时自动回退到非流式，并把默认 AI 请求超时提高到更适合大任务的级别。对于内容很多的页面，它还可以在运行时按结构拆成少数几个 chunk，只重试失败的 chunk，再把通过校验的 chunk 结果合并回原始页面结果。加上 `--debug` 后，还会输出 task 加载、chunk 规划、请求发起、首个流式内容到达、响应完成、校验重试和结果写入这些阶段日志。`translate apply` 会把短 ID 映射回内部 `segmentId` 和 `sourceHash`，再次校验 schema，并且只接受 `sourceHash` 仍与当前源内容一致的翻译。
 
 当 task 中包含 `` `snap-always` `` 这类内联代码时，结果文本必须保留相同的 inline code span 与顺序，DocuMirror 才能把译文正确拆回原始 DOM 结构。
 

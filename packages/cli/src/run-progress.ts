@@ -5,6 +5,13 @@ type ActiveRunTask = {
   taskId: string;
   attempt: number;
   maxAttempts: number;
+  chunk?: {
+    chunkIndex: number;
+    chunkCount: number;
+    itemStart: number;
+    itemEnd: number;
+    headingText?: string;
+  };
   /** When the current attempt started (for timeout detection) */
   attemptStartedAt: number;
   /** When the task first started (for total duration tracking) */
@@ -24,6 +31,7 @@ export type RunProgressState = {
   activeTasks: Map<string, ActiveRunTask>;
   // Metrics for success rate and average duration
   totalAttempts: number;
+  successfulAttempts: number;
   totalSuccessDurationMs: number;
   successWithDurationCount: number;
 };
@@ -41,6 +49,7 @@ export function createRunProgressState(now = Date.now()): RunProgressState {
     startedAt: now,
     activeTasks: new Map(),
     totalAttempts: 0,
+    successfulAttempts: 0,
     totalSuccessDurationMs: 0,
     successWithDurationCount: 0,
   };
@@ -63,6 +72,7 @@ export function applyRunProgressEvent(
     state.startedAt = now;
     state.activeTasks.clear();
     state.totalAttempts = 0;
+    state.successfulAttempts = 0;
     state.totalSuccessDurationMs = 0;
     state.successWithDurationCount = 0;
     return;
@@ -77,6 +87,7 @@ export function applyRunProgressEvent(
       taskId: event.taskId,
       attempt: 1,
       maxAttempts: 0,
+      chunk: undefined,
       attemptStartedAt: now,
       taskStartedAt: now,
     });
@@ -90,10 +101,23 @@ export function applyRunProgressEvent(
       taskId: event.taskId,
       attempt: event.attempt,
       maxAttempts: event.maxAttempts,
+      chunk: event.chunk,
       attemptStartedAt: now,
       // Preserve the original task start time
       taskStartedAt: current?.taskStartedAt ?? now,
     });
+    return;
+  }
+
+  if (event.type === "attemptCompleted") {
+    state.successfulAttempts += 1;
+    const current = state.activeTasks.get(event.taskId);
+    if (current) {
+      state.activeTasks.set(event.taskId, {
+        ...current,
+        chunk: event.chunk ?? current.chunk,
+      });
+    }
     return;
   }
 
@@ -149,12 +173,11 @@ export function formatRunProgressMessage(
     state.successWithDurationCount > 0
       ? state.totalSuccessDurationMs / state.successWithDurationCount
       : 0;
-  // Success rate: successful tasks / total attempts
-  // Each successful task represents 1 successful attempt (the final one)
-  // Total attempts includes all retries
+  // Success rate: successful translation attempts / total attempts.
+  // With chunked page tasks, each validated chunk counts as one successful attempt.
   const successRate =
     state.totalAttempts > 0
-      ? (state.successCount / state.totalAttempts) * 100
+      ? (state.successfulAttempts / state.totalAttempts) * 100
       : 100;
 
   const metrics: string[] = [];
@@ -234,13 +257,35 @@ function formatActiveTaskLines(state: RunProgressState, now: number): string[] {
       task.attempt > 1
         ? pc.yellow(`attempt ${attempt}`)
         : pc.dim(`attempt ${attempt}`);
+    const chunkStr = task.chunk
+      ? pc.dim(formatChunkLabel(task.chunk))
+      : undefined;
     // Color waiting time based on timeout status
     const waitingStr = isPastTimeout
       ? pc.red(`waiting ${formatDuration(waitMs)}`)
       : pc.dim(`waiting ${formatDuration(waitMs)}`);
 
-    return `${prefix} [${taskIdStr}] ${attemptStr}, ${waitingStr}${timeoutHint}`;
+    return `${prefix} [${taskIdStr}] ${[attemptStr, chunkStr, waitingStr]
+      .filter(Boolean)
+      .join(", ")}${timeoutHint}`;
   });
+}
+
+function formatChunkLabel(chunk: NonNullable<ActiveRunTask["chunk"]>): string {
+  const base = `chunk ${chunk.chunkIndex}/${chunk.chunkCount}, items ${chunk.itemStart}-${chunk.itemEnd}`;
+  if (!chunk.headingText) {
+    return base;
+  }
+
+  return `${base}, heading "${truncateHeading(chunk.headingText, 32)}"`;
+}
+
+function truncateHeading(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function formatSeconds(milliseconds: number): string {

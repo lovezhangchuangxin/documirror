@@ -73,6 +73,14 @@ export type VerifySummary = {
   warnings: TranslationVerificationIssue[];
 };
 
+export type RunTaskChunkProgress = {
+  chunkIndex: number;
+  chunkCount: number;
+  itemStart: number;
+  itemEnd: number;
+  headingText?: string;
+};
+
 export type RunTranslationsProgressEvent =
   | {
       type: "queued";
@@ -95,6 +103,14 @@ export type RunTranslationsProgressEvent =
       maxAttempts: number;
       completed: number;
       total: number;
+      chunk?: RunTaskChunkProgress;
+    }
+  | {
+      type: "attemptCompleted";
+      taskId: string;
+      completed: number;
+      total: number;
+      chunk?: RunTaskChunkProgress;
     }
   | {
       type: "completed";

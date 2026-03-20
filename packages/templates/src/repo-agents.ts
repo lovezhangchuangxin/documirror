@@ -118,7 +118,7 @@ pnpm documirror:doctor
 - External task files use short item ids such as \`1\`, \`2\`, and \`3\` for agent-friendly translation work.
 - Internal state maps those short ids back to \`segmentId\` and \`sourceHash\` through files under \`state/task-mappings/\`.
 - \`translate plan\` only exports work that is new, stale, or missing an accepted translation.
-- \`translate run\` calls the configured OpenAI-compatible API directly and writes verified results into \`tasks/done/\`.
+- \`translate run\` calls the configured OpenAI-compatible API directly. Large page tasks may be split into a few runtime chunks internally, but verified results are still written into \`tasks/done/\` as page-level files.
 - \`translate apply\` rejects stale results whose source hash no longer matches the current extracted content.
 
 ## Guardrails

@@ -122,6 +122,7 @@ config
         maxAttemptsPerTask: currentAi.maxAttemptsPerTask,
         temperature: currentAi.temperature,
         authTokenEnvVar: currentAi.authTokenEnvVar,
+        chunking: currentAi.chunking,
       },
       {
         title: "Configure AI model",
@@ -424,6 +425,13 @@ async function collectInitOptions(
     maxAttemptsPerTask: 3,
     temperature: 0.2,
     authTokenEnvVar: "DOCUMIRROR_AI_AUTH_TOKEN",
+    chunking: {
+      enabled: true,
+      strategy: "structural" as const,
+      maxItemsPerChunk: 80,
+      softMaxSourceCharsPerChunk: 6_000,
+      hardMaxSourceCharsPerChunk: 9_000,
+    },
   };
   const repoDir = String(options.repo ?? process.cwd());
   const siteUrl =
@@ -497,6 +505,7 @@ async function promptAiConfig(
     maxAttemptsPerTask: number;
     temperature: number;
     authTokenEnvVar: string;
+    chunking: MirrorAiConfig["chunking"];
   },
   options: {
     title: string;
@@ -505,7 +514,11 @@ async function promptAiConfig(
   ai: MirrorAiConfig;
   authToken: string;
 }> {
-  const answers: Record<string, string | number> = process.stdin.isTTY
+  const answers:
+    | Record<string, string | number>
+    | (typeof initial &
+        Record<string, string | number | MirrorAiConfig["chunking"]>) = process
+    .stdin.isTTY
     ? ((await prompts(
         [
           {
@@ -579,6 +592,7 @@ async function promptAiConfig(
       ),
       maxAttemptsPerTask: initial.maxAttemptsPerTask,
       temperature: initial.temperature,
+      chunking: initial.chunking,
     },
     authToken,
   };

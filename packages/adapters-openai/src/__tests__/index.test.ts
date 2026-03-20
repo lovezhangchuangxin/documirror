@@ -39,6 +39,13 @@ function createOptions(): OpenAiTranslationOptions {
       requestTimeoutMs: 300_000,
       maxAttemptsPerTask: 3,
       temperature: 0.2,
+      chunking: {
+        enabled: true,
+        strategy: "structural",
+        maxItemsPerChunk: 80,
+        softMaxSourceCharsPerChunk: 6_000,
+        hardMaxSourceCharsPerChunk: 9_000,
+      },
     },
     authToken: "secret-token",
     task: {
@@ -287,6 +294,40 @@ describe("adapters-openai", () => {
     expect(userPrompt).toContain(
       'Translation for id \\"1\\" must preserve inline code spans [\\"snap-always\\"] in the original order',
     );
+  });
+
+  it("adds chunk context to the prompt for split page tasks", async () => {
+    mockCreate.mockResolvedValueOnce(
+      createChunkStream([
+        '{"schemaVersion":2,"taskId":"task_test__chunk_1","translations":[',
+        '{"id":"1","translatedText":"你好，世界"}',
+        "]}",
+      ]),
+    );
+
+    await translateTaskWithOpenAi({
+      ...createOptions(),
+      task: {
+        ...createOptions().task,
+        taskId: "task_test__chunk_1",
+      },
+      chunkContext: {
+        chunkIndex: 1,
+        chunkCount: 2,
+        itemStart: 1,
+        itemEnd: 40,
+        headingText: "Install",
+      },
+    });
+
+    const request = mockCreate.mock.calls[0]?.[0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const userPrompt = request.messages[1]?.content ?? "";
+
+    expect(userPrompt).toContain("Chunk context");
+    expect(userPrompt).toContain('"chunkCount": 2');
+    expect(userPrompt).toContain('"headingText": "Install"');
   });
 
   it("targets retry context by actual response items for id ordering issues", async () => {

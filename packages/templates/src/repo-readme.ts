@@ -40,6 +40,8 @@ Run automatic translation:
 pnpm documirror:translate:run
 \`\`\`
 
+Large page tasks may be split into a few runtime chunks automatically, but the persisted task and result files remain page-based.
+
 Debug a slow or stuck translation run:
 
 \`\`\`bash

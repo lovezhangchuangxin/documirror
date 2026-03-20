@@ -44,6 +44,13 @@ function createAiConfig(): MirrorAiConfig {
     requestTimeoutMs: 60_000,
     maxAttemptsPerTask: 2,
     temperature: 0.2,
+    chunking: {
+      enabled: true,
+      strategy: "structural",
+      maxItemsPerChunk: 80,
+      softMaxSourceCharsPerChunk: 6_000,
+      hardMaxSourceCharsPerChunk: 9_000,
+    },
   };
 }
 
@@ -473,6 +480,334 @@ describe("documirror core pipeline", () => {
         }),
       ]),
     );
+  });
+
+  it("splits large page tasks into chunks and merges the final page result", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: {
+        ...createAiConfig(),
+        chunking: {
+          enabled: true,
+          strategy: "structural",
+          maxItemsPerChunk: 3,
+          softMaxSourceCharsPerChunk: 1_000,
+          hardMaxSourceCharsPerChunk: 2_000,
+        },
+      },
+      authToken: "secret-token",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><h2>Install</h2><p>Install the package</p><p>Run the setup</p><h2>Deploy</h2><p>Deploy the site</p><p>Check the output</p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const chunkContexts: Array<{
+      taskId: string;
+      headingText?: string;
+      itemStart?: number;
+      itemEnd?: number;
+    }> = [];
+    mockTranslateTaskWithOpenAi.mockImplementation(
+      async (options: {
+        task: { taskId: string };
+        chunkContext?: {
+          headingText?: string;
+          itemStart: number;
+          itemEnd: number;
+        };
+      }) => {
+        chunkContexts.push({
+          taskId: options.task.taskId,
+          headingText: options.chunkContext?.headingText,
+          itemStart: options.chunkContext?.itemStart,
+          itemEnd: options.chunkContext?.itemEnd,
+        });
+
+        if (options.task.taskId === "task_dc3d488a4e__chunk_1") {
+          return {
+            rawText: JSON.stringify({
+              schemaVersion: 2,
+              taskId: options.task.taskId,
+              translations: [
+                { id: "1", translatedText: "安装" },
+                { id: "2", translatedText: "安装该包" },
+                { id: "3", translatedText: "运行安装步骤" },
+              ],
+            }),
+            draft: {
+              schemaVersion: 2 as const,
+              taskId: options.task.taskId,
+              translations: [
+                { id: "1", translatedText: "安装" },
+                { id: "2", translatedText: "安装该包" },
+                { id: "3", translatedText: "运行安装步骤" },
+              ],
+            },
+          };
+        }
+
+        return {
+          rawText: JSON.stringify({
+            schemaVersion: 2,
+            taskId: options.task.taskId,
+            translations: [
+              { id: "1", translatedText: "部署" },
+              { id: "2", translatedText: "部署站点" },
+              { id: "3", translatedText: "检查输出" },
+            ],
+          }),
+          draft: {
+            schemaVersion: 2 as const,
+            taskId: options.task.taskId,
+            translations: [
+              { id: "1", translatedText: "部署" },
+              { id: "2", translatedText: "部署站点" },
+              { id: "3", translatedText: "检查输出" },
+            ],
+          },
+        };
+      },
+    );
+
+    const summary = await runTranslations(repoDir, silentLogger);
+    expect(summary.successCount).toBe(1);
+    expect(mockTranslateTaskWithOpenAi).toHaveBeenCalledTimes(2);
+    expect(chunkContexts).toEqual([
+      {
+        taskId: "task_dc3d488a4e__chunk_1",
+        headingText: "Install",
+        itemStart: 1,
+        itemEnd: 3,
+      },
+      {
+        taskId: "task_dc3d488a4e__chunk_2",
+        headingText: "Deploy",
+        itemStart: 4,
+        itemEnd: 6,
+      },
+    ]);
+
+    const result = JSON.parse(
+      await readFile(
+        join(repoDir, ".documirror", "tasks", "done", "task_dc3d488a4e.json"),
+        "utf8",
+      ),
+    ) as {
+      taskId: string;
+      translations: Array<{ id: string; translatedText: string }>;
+    };
+    expect(result.taskId).toBe("task_dc3d488a4e");
+    expect(result.translations).toEqual([
+      { id: "1", translatedText: "安装" },
+      { id: "2", translatedText: "安装该包" },
+      { id: "3", translatedText: "运行安装步骤" },
+      { id: "4", translatedText: "部署" },
+      { id: "5", translatedText: "部署站点" },
+      { id: "6", translatedText: "检查输出" },
+    ]);
+  });
+
+  it("retries only the failing chunk instead of rerunning the whole page", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: {
+        ...createAiConfig(),
+        maxAttemptsPerTask: 2,
+        chunking: {
+          enabled: true,
+          strategy: "structural",
+          maxItemsPerChunk: 3,
+          softMaxSourceCharsPerChunk: 1_000,
+          hardMaxSourceCharsPerChunk: 2_000,
+        },
+      },
+      authToken: "secret-token",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><h2>Install</h2><p>Install the package</p><p>Run the setup</p><h2>Deploy</h2><p>Deploy the site</p><p>Check the output</p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    mockTranslateTaskWithOpenAi.mockImplementation(
+      async (options: {
+        task: { taskId: string };
+        previousResponse?: string;
+      }) => {
+        if (options.task.taskId === "task_dc3d488a4e__chunk_1") {
+          return {
+            rawText: JSON.stringify({
+              schemaVersion: 2,
+              taskId: options.task.taskId,
+              translations: [
+                { id: "1", translatedText: "安装" },
+                { id: "2", translatedText: "安装该包" },
+                { id: "3", translatedText: "运行安装步骤" },
+              ],
+            }),
+            draft: {
+              schemaVersion: 2 as const,
+              taskId: options.task.taskId,
+              translations: [
+                { id: "1", translatedText: "安装" },
+                { id: "2", translatedText: "安装该包" },
+                { id: "3", translatedText: "运行安装步骤" },
+              ],
+            },
+          };
+        }
+
+        if (!options.previousResponse) {
+          return {
+            rawText: JSON.stringify({
+              schemaVersion: 2,
+              taskId: options.task.taskId,
+              translations: [
+                { id: "1", translatedText: "部署" },
+                { id: "2", translatedText: "部署站点" },
+              ],
+            }),
+            draft: {
+              schemaVersion: 2 as const,
+              taskId: options.task.taskId,
+              translations: [
+                { id: "1", translatedText: "部署" },
+                { id: "2", translatedText: "部署站点" },
+              ],
+            },
+          };
+        }
+
+        return {
+          rawText: JSON.stringify({
+            schemaVersion: 2,
+            taskId: options.task.taskId,
+            translations: [
+              { id: "1", translatedText: "部署" },
+              { id: "2", translatedText: "部署站点" },
+              { id: "3", translatedText: "检查输出" },
+            ],
+          }),
+          draft: {
+            schemaVersion: 2 as const,
+            taskId: options.task.taskId,
+            translations: [
+              { id: "1", translatedText: "部署" },
+              { id: "2", translatedText: "部署站点" },
+              { id: "3", translatedText: "检查输出" },
+            ],
+          },
+        };
+      },
+    );
+
+    const summary = await runTranslations(repoDir, silentLogger);
+    expect(summary.successCount).toBe(1);
+    expect(mockTranslateTaskWithOpenAi).toHaveBeenCalledTimes(3);
+    expect(
+      mockTranslateTaskWithOpenAi.mock.calls.map(
+        (call) => (call[0] as { task: { taskId: string } }).task.taskId,
+      ),
+    ).toEqual([
+      "task_dc3d488a4e__chunk_1",
+      "task_dc3d488a4e__chunk_2",
+      "task_dc3d488a4e__chunk_2",
+    ]);
+    expect(
+      (
+        mockTranslateTaskWithOpenAi.mock.calls[2]?.[0] as {
+          previousResponse?: string;
+        }
+      ).previousResponse,
+    ).toContain('"translations"');
   });
 
   it("marks malformed done results invalid and verify reports schema errors", async () => {

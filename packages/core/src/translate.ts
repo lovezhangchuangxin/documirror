@@ -49,6 +49,12 @@ import {
 } from "@documirror/shared";
 
 import { resolveAiAuthToken } from "./ai-config";
+import {
+  createChunkTaskArtifacts,
+  mergeChunkDrafts,
+  planPageChunks,
+  type PlannedPageChunk,
+} from "./page-chunking";
 import { getRepoPaths } from "./repo-paths";
 import {
   loadConfig,
@@ -93,6 +99,14 @@ type RunFailureReport = {
   taskId: string;
   failedAt: string;
   attemptCount: number;
+  chunk?: {
+    chunkId: string;
+    chunkIndex: number;
+    chunkCount: number;
+    itemStart: number;
+    itemEnd: number;
+    headingText?: string;
+  };
   resultPreview?: string;
   errors: TranslationVerificationIssue[];
   message: string;
@@ -102,6 +116,11 @@ type CandidateVerification = {
   ok: boolean;
   errors: TranslationVerificationIssue[];
   warnings: TranslationVerificationIssue[];
+};
+
+type RunTaskViewResult = {
+  draft: TranslationDraftResultFile;
+  verification: CandidateVerification;
 };
 
 export async function planTranslations(
@@ -560,6 +579,163 @@ async function runSingleTask(options: {
     throw new Error(freshnessIssues[0]?.message ?? `Task ${taskId} is stale`);
   }
 
+  const chunkPlan = planPageChunks({
+    task,
+    mapping,
+    segmentIndex,
+    chunking: config.ai.chunking,
+  });
+  if (chunkPlan.chunks.length > 1) {
+    onDebug?.(
+      `${taskId}: split ${task.content.length} item(s) into ${chunkPlan.chunks.length} chunk(s): ${chunkPlan.chunks
+        .map((chunk) =>
+          formatChunkRange(chunk.headingText, chunk.itemStart, chunk.itemEnd),
+        )
+        .join("; ")}`,
+    );
+  }
+
+  const chunkDrafts: Array<{
+    chunk: PlannedPageChunk;
+    draft: TranslationDraftResultFile;
+    originalIds: string[];
+  }> = [];
+
+  for (const chunk of chunkPlan.chunks) {
+    const artifacts = createChunkTaskArtifacts(task, mapping, chunk);
+    const result = await runTaskView({
+      paths,
+      taskId,
+      task: artifacts.task,
+      mapping: artifacts.mapping,
+      authToken,
+      config,
+      segmentIndex,
+      logger,
+      signal,
+      onProgress,
+      onDebug,
+      getSnapshot,
+      chunk: chunkPlan.chunks.length > 1 ? chunk : undefined,
+    });
+    chunkDrafts.push({
+      chunk,
+      draft: result.draft,
+      originalIds: artifacts.originalIds,
+    });
+  }
+
+  const finalDraft =
+    chunkDrafts.length === 1 && chunkDrafts[0]?.chunk.isWholeTask
+      ? chunkDrafts[0].draft
+      : mergeChunkDrafts({
+          taskId,
+          chunkDrafts,
+        });
+  const finalVerification = verifyCandidateResult(
+    task,
+    mapping,
+    segmentIndex,
+    finalDraft,
+  );
+  if (!finalVerification.ok) {
+    await writeRunFailureReport(
+      paths,
+      taskId,
+      config.ai.maxAttemptsPerTask,
+      finalVerification.errors,
+      JSON.stringify(finalDraft, null, 2),
+      finalVerification.errors[0]?.message ??
+        `Merged translation failed verification for ${taskId}`,
+    );
+    throw new Error(
+      finalVerification.errors[0]?.message ??
+        `Merged translation failed verification for ${taskId}`,
+    );
+  }
+
+  const resultPath = getDoneResultPath(paths, taskId);
+  onDebug?.(`${taskId}: passed validation; writing merged result`);
+  const result = {
+    schemaVersion: 2 as const,
+    taskId,
+    provider: config.ai.llmProvider,
+    model: config.ai.modelName,
+    completedAt: createTimestamp(),
+    translations: finalDraft.translations,
+  };
+  await writeJson(resultPath, result);
+  const resultBody = await fs.readFile(resultPath, "utf8");
+  const report = buildVerificationReport({
+    repoDir,
+    taskId,
+    resultPath,
+    resultBody,
+    verification: finalVerification,
+  });
+  await writeJson(getVerificationReportPath(paths, taskId), report);
+  await fs.remove(getRunFailureReportPath(paths, taskId));
+  onDebug?.(
+    `${taskId}: wrote done result and verification report to ${toRepoRelativePath(repoDir, resultPath)}`,
+  );
+}
+
+async function runTaskView(options: {
+  paths: ReturnType<typeof getRepoPaths>;
+  taskId: string;
+  task: TranslationTaskFile;
+  mapping: TranslationTaskMappingFile;
+  authToken: string;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  segmentIndex: Map<string, SegmentRecord>;
+  logger: Logger;
+  signal?: AbortSignal;
+  onProgress?: (event: RunTranslationsProgressEvent) => void;
+  onDebug?: (message: string) => void;
+  getSnapshot: () => {
+    completed: number;
+    successCount: number;
+    failureCount: number;
+    total: number;
+  };
+  chunk?: PlannedPageChunk;
+}): Promise<RunTaskViewResult> {
+  const {
+    paths,
+    taskId,
+    task,
+    mapping,
+    authToken,
+    config,
+    segmentIndex,
+    logger,
+    signal,
+    onProgress,
+    onDebug,
+    getSnapshot,
+    chunk,
+  } = options;
+  const label = describeTaskView(taskId, chunk);
+  const freshnessIssues = [
+    ...validateTaskStructure(task),
+    ...validateTaskFreshness(task, mapping, segmentIndex),
+  ];
+  if (freshnessIssues.length > 0) {
+    await writeRunFailureReport(
+      paths,
+      taskId,
+      config.ai.maxAttemptsPerTask,
+      freshnessIssues,
+      undefined,
+      freshnessIssues[0]?.message ?? `Task ${taskId} is stale`,
+      chunk,
+    );
+    onDebug?.(
+      `${label}: freshness validation failed before translation: ${formatIssueSummary(freshnessIssues[0])}`,
+    );
+    throw new Error(freshnessIssues[0]?.message ?? `Task ${taskId} is stale`);
+  }
+
   let previousResponse: string | undefined;
   let lastIssues: TranslationVerificationIssue[] = [];
 
@@ -573,15 +749,24 @@ async function runSingleTask(options: {
       maxAttempts: config.ai.maxAttemptsPerTask,
       completed: snapshot.completed,
       total: snapshot.total,
+      chunk: chunk
+        ? {
+            chunkIndex: chunk.chunkIndex + 1,
+            chunkCount: chunk.chunkCount,
+            itemStart: chunk.itemStart,
+            itemEnd: chunk.itemEnd,
+            headingText: chunk.headingText,
+          }
+        : undefined,
     });
     onDebug?.(
-      `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} starting`,
+      `${label}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} starting`,
     );
 
     try {
       const requestStartedAt = Date.now();
       onDebug?.(
-        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} sending request to ${config.ai.baseUrl}`,
+        `${label}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} sending request to ${config.ai.baseUrl}`,
       );
       const translated = await translateTaskWithOpenAi({
         config: config.ai,
@@ -590,12 +775,21 @@ async function runSingleTask(options: {
         task,
         previousResponse,
         verificationIssues: lastIssues,
+        chunkContext: chunk
+          ? {
+              chunkIndex: chunk.chunkIndex + 1,
+              chunkCount: chunk.chunkCount,
+              itemStart: chunk.itemStart,
+              itemEnd: chunk.itemEnd,
+              headingText: chunk.headingText,
+            }
+          : undefined,
         onDebug(message) {
-          onDebug?.(`${taskId}: ${message}`);
+          onDebug?.(`${label}: ${message}`);
         },
       });
       onDebug?.(
-        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} received response after ${formatRunDuration(Date.now() - requestStartedAt)}`,
+        `${label}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} received response after ${formatRunDuration(Date.now() - requestStartedAt)}`,
       );
       previousResponse = JSON.stringify(translated.draft, null, 2);
 
@@ -608,52 +802,45 @@ async function runSingleTask(options: {
       if (!verification.ok) {
         lastIssues = verification.errors;
         logger.warn(
-          `Task ${taskId} failed validation on attempt ${attempt}: ${verification.errors[0]?.message ?? "unknown error"}`,
+          `${label} failed validation on attempt ${attempt}: ${verification.errors[0]?.message ?? "unknown error"}`,
         );
         onDebug?.(
-          `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} validation failed: ${formatIssueSummary(verification.errors[0])}; retrying`,
+          `${label}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} validation failed: ${formatIssueSummary(verification.errors[0])}; retrying`,
         );
         continue;
       }
 
-      const resultPath = getDoneResultPath(paths, taskId);
-      onDebug?.(
-        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} passed validation; writing result`,
-      );
-      const result = {
-        schemaVersion: 2 as const,
+      onProgress?.({
+        type: "attemptCompleted",
         taskId,
-        provider: config.ai.llmProvider,
-        model: config.ai.modelName,
-        completedAt: createTimestamp(),
-        translations: translated.draft.translations,
-      };
-      await writeJson(resultPath, result);
-      const resultBody = await fs.readFile(resultPath, "utf8");
-      const report = buildVerificationReport({
-        repoDir,
-        taskId,
-        resultPath,
-        resultBody,
-        verification,
+        completed: snapshot.completed,
+        total: snapshot.total,
+        chunk: chunk
+          ? {
+              chunkIndex: chunk.chunkIndex + 1,
+              chunkCount: chunk.chunkCount,
+              itemStart: chunk.itemStart,
+              itemEnd: chunk.itemEnd,
+              headingText: chunk.headingText,
+            }
+          : undefined,
       });
-      await writeJson(getVerificationReportPath(paths, taskId), report);
-      await fs.remove(getRunFailureReportPath(paths, taskId));
-      onDebug?.(
-        `${taskId}: wrote done result and verification report to ${toRepoRelativePath(repoDir, resultPath)}`,
-      );
-      return;
+
+      return {
+        draft: translated.draft,
+        verification,
+      };
     } catch (error) {
       if (isAbortLikeError(error, signal)) {
         onDebug?.(
-          `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} cancelled by user`,
+          `${label}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} cancelled by user`,
         );
         throw error;
       }
       const issues = createIssuesFromUnknownError(error, "$");
       lastIssues = issues;
       onDebug?.(
-        `${taskId}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} failed: ${error instanceof Error ? error.message : String(error)}`,
+        `${label}: attempt ${attempt}/${config.ai.maxAttemptsPerTask} failed: ${error instanceof Error ? error.message : String(error)}`,
       );
       await writeRunFailureReport(
         paths,
@@ -662,9 +849,10 @@ async function runSingleTask(options: {
         issues,
         previousResponse,
         error instanceof Error ? error.message : String(error),
+        chunk,
       );
       onDebug?.(
-        `${taskId}: wrote failure report for attempt ${attempt}/${config.ai.maxAttemptsPerTask}`,
+        `${label}: wrote failure report for attempt ${attempt}/${config.ai.maxAttemptsPerTask}`,
       );
       if (attempt === config.ai.maxAttemptsPerTask) {
         throw error instanceof Error ? error : new Error(String(error));
@@ -679,8 +867,9 @@ async function runSingleTask(options: {
     lastIssues,
     previousResponse,
     `Translation failed for ${taskId}`,
+    chunk,
   );
-  onDebug?.(`${taskId}: exhausted all attempts without a valid result`);
+  onDebug?.(`${label}: exhausted all attempts without a valid result`);
   throw new Error(`Translation failed for ${taskId}`);
 }
 
@@ -2143,12 +2332,23 @@ async function writeRunFailureReport(
   errors: TranslationVerificationIssue[],
   resultPreview: string | undefined,
   message: string,
+  chunk?: PlannedPageChunk,
 ): Promise<void> {
   const report: RunFailureReport = {
     schemaVersion: 1,
     taskId,
     failedAt: createTimestamp(),
     attemptCount,
+    chunk: chunk
+      ? {
+          chunkId: chunk.chunkId,
+          chunkIndex: chunk.chunkIndex + 1,
+          chunkCount: chunk.chunkCount,
+          itemStart: chunk.itemStart,
+          itemEnd: chunk.itemEnd,
+          headingText: chunk.headingText,
+        }
+      : undefined,
     resultPreview,
     errors,
     message,
@@ -2290,6 +2490,43 @@ function formatIssueSummary(
   }
 
   return `[${issue.code}] ${issue.message}`;
+}
+
+function describeTaskView(
+  taskId: string,
+  chunk: PlannedPageChunk | undefined,
+): string {
+  if (!chunk) {
+    return taskId;
+  }
+
+  const range = formatChunkRange(
+    chunk.headingText,
+    chunk.itemStart,
+    chunk.itemEnd,
+  );
+  return `${taskId} [chunk ${chunk.chunkIndex + 1}/${chunk.chunkCount}: ${range}]`;
+}
+
+function formatChunkRange(
+  headingText: string | undefined,
+  itemStart: number,
+  itemEnd: number,
+): string {
+  const range = `items ${itemStart}-${itemEnd}`;
+  if (!headingText) {
+    return range;
+  }
+
+  return `${range}, heading "${truncateForLog(headingText, 60)}"`;
+}
+
+function truncateForLog(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function formatRunDuration(milliseconds: number): string {

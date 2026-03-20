@@ -86,6 +86,7 @@ These behaviors are central to the current design and should be preserved unless
 - task/result files may use short item IDs, but core state must map them back to `segmentId` and `sourceHash` internally.
 - `translate plan` must only export segments that are new, stale, or missing accepted translations.
 - `translate run` must validate model output before writing final result files.
+- `translate run` may split a large page task into a few runtime chunks internally, but the persisted task and result files remain page-based.
 - `translate apply` must reject stale results whose `sourceHash` no longer matches the current source segment.
 - core owns orchestration; CLI should remain thin and interactive.
 - shared schemas belong in `packages/shared`.

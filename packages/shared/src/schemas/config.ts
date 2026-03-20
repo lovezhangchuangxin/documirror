@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import {
   DEFAULT_AI_AUTH_TOKEN_ENV_VAR,
+  DEFAULT_AI_CHUNKING_ENABLED,
+  DEFAULT_AI_CHUNKING_HARD_MAX_SOURCE_CHARS_PER_CHUNK,
+  DEFAULT_AI_CHUNKING_MAX_ITEMS_PER_CHUNK,
+  DEFAULT_AI_CHUNKING_SOFT_MAX_SOURCE_CHARS_PER_CHUNK,
   DEFAULT_AI_CONCURRENCY,
   DEFAULT_AI_MAX_ATTEMPTS_PER_TASK,
   DEFAULT_AI_REQUEST_TIMEOUT_MS,
@@ -20,6 +24,33 @@ export const selectorRulesSchema = z.object({
 export const buildConfigSchema = z.object({
   basePath: z.string().default("/"),
 });
+
+export const mirrorAiChunkingConfigSchema = z.object({
+  enabled: z.boolean().default(DEFAULT_AI_CHUNKING_ENABLED),
+  strategy: z.literal("structural").default("structural"),
+  maxItemsPerChunk: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .default(DEFAULT_AI_CHUNKING_MAX_ITEMS_PER_CHUNK),
+  softMaxSourceCharsPerChunk: z
+    .number()
+    .int()
+    .min(500)
+    .max(100_000)
+    .default(DEFAULT_AI_CHUNKING_SOFT_MAX_SOURCE_CHARS_PER_CHUNK),
+  hardMaxSourceCharsPerChunk: z
+    .number()
+    .int()
+    .min(500)
+    .max(200_000)
+    .default(DEFAULT_AI_CHUNKING_HARD_MAX_SOURCE_CHARS_PER_CHUNK),
+});
+
+export type MirrorAiChunkingConfig = z.infer<
+  typeof mirrorAiChunkingConfigSchema
+>;
 
 export const mirrorAiConfigSchema = z.object({
   providerKind: z.literal("openai-compatible").default("openai-compatible"),
@@ -45,6 +76,15 @@ export const mirrorAiConfigSchema = z.object({
     .max(10)
     .default(DEFAULT_AI_MAX_ATTEMPTS_PER_TASK),
   temperature: z.number().min(0).max(2).default(DEFAULT_AI_TEMPERATURE),
+  chunking: mirrorAiChunkingConfigSchema.default({
+    enabled: DEFAULT_AI_CHUNKING_ENABLED,
+    strategy: "structural",
+    maxItemsPerChunk: DEFAULT_AI_CHUNKING_MAX_ITEMS_PER_CHUNK,
+    softMaxSourceCharsPerChunk:
+      DEFAULT_AI_CHUNKING_SOFT_MAX_SOURCE_CHARS_PER_CHUNK,
+    hardMaxSourceCharsPerChunk:
+      DEFAULT_AI_CHUNKING_HARD_MAX_SOURCE_CHARS_PER_CHUNK,
+  }),
 });
 
 export const mirrorConfigSchema = z.object({
@@ -106,6 +146,15 @@ export const mirrorConfigSchema = z.object({
     requestTimeoutMs: DEFAULT_AI_REQUEST_TIMEOUT_MS,
     maxAttemptsPerTask: DEFAULT_AI_MAX_ATTEMPTS_PER_TASK,
     temperature: DEFAULT_AI_TEMPERATURE,
+    chunking: {
+      enabled: DEFAULT_AI_CHUNKING_ENABLED,
+      strategy: "structural",
+      maxItemsPerChunk: DEFAULT_AI_CHUNKING_MAX_ITEMS_PER_CHUNK,
+      softMaxSourceCharsPerChunk:
+        DEFAULT_AI_CHUNKING_SOFT_MAX_SOURCE_CHARS_PER_CHUNK,
+      hardMaxSourceCharsPerChunk:
+        DEFAULT_AI_CHUNKING_HARD_MAX_SOURCE_CHARS_PER_CHUNK,
+    },
   }),
 });
 

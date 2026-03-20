@@ -28,6 +28,13 @@ export type OpenAiTranslationOptions = OpenAiConnectionOptions & {
   task: TranslationTaskFile;
   previousResponse?: string;
   verificationIssues?: TranslationVerificationIssue[];
+  chunkContext?: {
+    chunkIndex: number;
+    chunkCount: number;
+    itemStart: number;
+    itemEnd: number;
+    headingText?: string;
+  };
 };
 
 export type OpenAiTranslationResult = {
@@ -103,6 +110,7 @@ export async function translateTaskWithOpenAi(
     task,
     previousResponse,
     verificationIssues = [],
+    chunkContext,
     onDebug,
   } = options;
   const client = createOpenAiClient(config, authToken);
@@ -111,7 +119,12 @@ export async function translateTaskWithOpenAi(
     signal,
     onDebug,
     systemPrompt: createSystemPrompt(),
-    userPrompt: createUserPrompt(task, previousResponse, verificationIssues),
+    userPrompt: createUserPrompt(
+      task,
+      previousResponse,
+      verificationIssues,
+      chunkContext,
+    ),
   });
 
   const parsed = translationDraftResultFileSchema.parse(
@@ -473,6 +486,7 @@ function createUserPrompt(
   task: TranslationTaskFile,
   previousResponse?: string,
   verificationIssues: TranslationVerificationIssue[] = [],
+  chunkContext?: OpenAiTranslationOptions["chunkContext"],
 ): string {
   const protectedItems = createProtectedItemChecklist(task);
   const retryItems = createRetryItemChecklist(
@@ -488,6 +502,26 @@ function createUserPrompt(
     "Task JSON:",
     JSON.stringify(task, null, 2),
   ];
+
+  if (chunkContext && chunkContext.chunkCount > 1) {
+    parts.push(
+      "",
+      "Chunk context (reference only, not part of the output):",
+      JSON.stringify(
+        {
+          chunkIndex: chunkContext.chunkIndex,
+          chunkCount: chunkContext.chunkCount,
+          itemRange: {
+            start: chunkContext.itemStart,
+            end: chunkContext.itemEnd,
+          },
+          headingText: chunkContext.headingText,
+        },
+        null,
+        2,
+      ),
+    );
+  }
 
   if (protectedItems.length > 0) {
     parts.push(

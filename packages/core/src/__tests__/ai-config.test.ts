@@ -24,6 +24,13 @@ function createAiConfig(): MirrorAiConfig {
     requestTimeoutMs: 60_000,
     maxAttemptsPerTask: 3,
     temperature: 0.2,
+    chunking: {
+      enabled: true,
+      strategy: "structural",
+      maxItemsPerChunk: 80,
+      softMaxSourceCharsPerChunk: 6_000,
+      hardMaxSourceCharsPerChunk: 9_000,
+    },
   };
 }
 

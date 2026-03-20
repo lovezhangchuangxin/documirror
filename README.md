@@ -4,7 +4,7 @@
 
 DocuMirror is a TypeScript monorepo for building translated mirrors of static documentation websites.
 
-It crawls a source docs site, extracts translatable HTML text and attributes, writes page-based translation task files, calls an OpenAI-compatible API to translate them automatically, verifies the results, and reassembles translated content into a deployable static mirror.
+It crawls a source docs site, extracts translatable HTML text and attributes, writes page-based translation task files, can split large page tasks into smaller runtime translation chunks, verifies the results, and reassembles translated content into a deployable static mirror.
 
 Repository conventions and contribution rules live in [AGENTS.md](./AGENTS.md).
 
@@ -256,6 +256,11 @@ Current AI configuration fields:
 - `requestTimeoutMs`
 - `maxAttemptsPerTask`
 - `temperature`
+- `chunking.enabled`
+- `chunking.strategy`
+- `chunking.maxItemsPerChunk`
+- `chunking.softMaxSourceCharsPerChunk`
+- `chunking.hardMaxSourceCharsPerChunk`
 
 `init` and `config ai` both run a live connection test before saving.
 
@@ -301,7 +306,7 @@ Result files include:
 - `completedAt`
 - translated items keyed by the short task `id`
 
-`translate run` uses the task file, glossary, and validation feedback to retry malformed or invalid model output automatically. It now prefers streamed chat completions when the provider supports them, falls back to non-streaming mode when needed, and uses a longer default AI request timeout. Add `--debug` to print stage logs such as task loading, request start, first streamed content, response completion, validation retry, and result writing. `translate apply` maps each short `id` back to internal `segmentId` and `sourceHash`, validates the result schema, and only accepts translations whose `sourceHash` still matches the current source segment.
+`translate run` uses the task file, glossary, and validation feedback to retry malformed or invalid model output automatically. It now prefers streamed chat completions when the provider supports them, falls back to non-streaming mode when needed, and uses a longer default AI request timeout. For large page tasks, it can split one page into a few structural runtime chunks, retry only the failing chunk, and merge the verified chunk results back into the original page result file. Add `--debug` to print stage logs such as task loading, chunk planning, request start, first streamed content, response completion, validation retry, and result writing. `translate apply` maps each short `id` back to internal `segmentId` and `sourceHash`, validates the result schema, and only accepts translations whose `sourceHash` still matches the current source segment.
 
 When a task item contains inline code such as `` `snap-always` ``, result text must preserve the same inline code spans and order so DocuMirror can split the translated sentence back around the original inline code nodes.
 
