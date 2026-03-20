@@ -45,7 +45,6 @@ export type OpenAiTranslationResult = {
 type ProtectedTextGuidance = {
   preservePlaceholders?: string[];
   preserveInlineCodeSpans?: string[];
-  inlineCodeTextSlotLayout?: Array<"text" | "empty">;
   note?: string;
 };
 
@@ -58,6 +57,9 @@ type RetryPromptEntry = {
   expectedSourceTextAtPosition?: string;
   currentTranslatedText?: string;
   missingTaskId?: string;
+  currentInlineCodeSpans?: string[];
+  inlineCodeMismatchDetail?: string;
+  inlineCodeRepairRule?: string;
 } & ProtectedTextGuidance;
 
 type RetryDraftSnapshot = {
@@ -476,8 +478,8 @@ function createSystemPrompt(): string {
     "Preserve placeholders, markdown structure, list markers, HTML entities, and inline code in backticks.",
     "Do not translate inline code spans or placeholders.",
     "Preserve placeholders byte-for-byte, including spaces inside them.",
-    "For items with inline code, keep text in the same slots before, between, and after code spans.",
-    "Do not move words across inline code spans; if the source starts or ends with code, the translation must do the same.",
+    "Preserve every inline code span exactly once inside backticks.",
+    "You may reorder inline code and surrounding natural language when needed for natural target-language syntax.",
     "Apply glossary terms exactly when source terms appear.",
   ].join(" ");
 }
@@ -561,7 +563,7 @@ function createUserPrompt(
     "- keep ids and order unchanged",
     "- keep every translation item present",
     "- preserve placeholders exactly, including internal spaces",
-    "- preserve inline code spans exactly and keep text in the same code-adjacent slots",
+    "- preserve every inline code span exactly once inside backticks",
   );
 
   return parts.join("\n");
@@ -583,7 +585,7 @@ function createProtectedItemChecklist(
         ...(guidance.preserveInlineCodeSpans
           ? {
               inlineCodeRule:
-                "Do not move words across code spans. Keep text in the same slots before, between, and after the inline code.",
+                "Keep every inline code span unchanged inside backticks. You may reorder inline code and surrounding text when needed, but do not drop, duplicate, or translate any code span.",
             }
           : {}),
       },
@@ -651,8 +653,6 @@ function createProtectedTextGuidance(
     ...(inlineCode && inlineCode.inlineCodeSpans.length > 0
       ? {
           preserveInlineCodeSpans: inlineCode.inlineCodeSpans,
-          inlineCodeTextSlotLayout:
-            inlineCode.textSegments.map(describeTextSlot),
         }
       : {}),
     ...(item.note
@@ -708,6 +708,10 @@ function appendRetryEntryForResponseIndex(
       ? {
           sourceText: actualTaskItem.text,
           ...createProtectedTextGuidance(actualTaskItem),
+          ...createRetryInlineCodeDiagnostics(
+            actualTaskItem,
+            responseItem.translatedText,
+          ),
         }
       : {}),
     ...(expectedTaskItem &&
@@ -848,8 +852,75 @@ function extractQuotedValues(message: string): string[] {
   return [...message.matchAll(/"([^"]+)"/gu)].map((match) => match[1] ?? "");
 }
 
-function describeTextSlot(value: string): "text" | "empty" {
-  return value.trim().length > 0 ? "text" : "empty";
+function createRetryInlineCodeDiagnostics(
+  item: TranslationTaskFile["content"][number],
+  translatedText: string,
+): Pick<
+  RetryPromptEntry,
+  "currentInlineCodeSpans" | "inlineCodeMismatchDetail" | "inlineCodeRepairRule"
+> {
+  const sourceInlineCode = parseInlineCodeSpans(item.text);
+  if (!sourceInlineCode || sourceInlineCode.inlineCodeSpans.length === 0) {
+    return {};
+  }
+
+  const translatedInlineCode = parseInlineCodeSpans(translatedText);
+  const mismatchDetail = describeRetryInlineCodeMismatch(
+    sourceInlineCode,
+    translatedInlineCode,
+  );
+
+  return {
+    ...(translatedInlineCode
+      ? {
+          currentInlineCodeSpans: translatedInlineCode.inlineCodeSpans,
+        }
+      : {
+          currentInlineCodeSpans: [],
+        }),
+    ...(mismatchDetail
+      ? {
+          inlineCodeMismatchDetail: mismatchDetail,
+          inlineCodeRepairRule:
+            "Rewrite only the surrounding natural language. Do not reorder, translate, drop, or unwrap any inline code span.",
+        }
+      : {}),
+  };
+}
+
+function describeRetryInlineCodeMismatch(
+  sourceInlineCode: NonNullable<ReturnType<typeof parseInlineCodeSpans>>,
+  translatedInlineCode: ReturnType<typeof parseInlineCodeSpans>,
+): string | undefined {
+  if (!translatedInlineCode) {
+    return "The current translation does not contain valid backtick-wrapped inline code spans.";
+  }
+
+  const expectedInlineCodeSpans = sourceInlineCode.inlineCodeSpans;
+  const currentInlineCodeSpans = translatedInlineCode.inlineCodeSpans;
+  if (
+    !areStringMultisetsEqual(expectedInlineCodeSpans, currentInlineCodeSpans)
+  ) {
+    return `Expected inline code spans ${JSON.stringify(expectedInlineCodeSpans)} but found ${JSON.stringify(currentInlineCodeSpans)}.`;
+  }
+
+  return undefined;
+}
+
+function areStringMultisetsEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const counts = new Map<string, number>();
+  left.forEach((value) => {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  });
+  right.forEach((value) => {
+    counts.set(value, (counts.get(value) ?? 0) - 1);
+  });
+
+  return [...counts.values()].every((count) => count === 0);
 }
 
 function looksLikeJsonModeCompatibilityError(error: unknown): boolean {

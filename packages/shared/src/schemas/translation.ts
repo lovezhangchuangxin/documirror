@@ -2,6 +2,35 @@ import { z } from "zod";
 
 export const translationStatusSchema = z.enum(["draft", "accepted", "stale"]);
 
+export const translationInlineGroupPlanPartSchema = z.discriminatedUnion(
+  "kind",
+  [
+    z.object({
+      kind: z.literal("text"),
+      translatedText: z.string(),
+    }),
+    z.object({
+      kind: z.literal("code"),
+      text: z.string(),
+      domPath: z.string(),
+    }),
+  ],
+);
+
+export type TranslationInlineGroupPlanPart = z.infer<
+  typeof translationInlineGroupPlanPartSchema
+>;
+
+export const translationInlineGroupPlanSchema = z.object({
+  groupId: z.string(),
+  segmentIds: z.array(z.string()).min(1),
+  parts: z.array(translationInlineGroupPlanPartSchema),
+});
+
+export type TranslationInlineGroupPlan = z.infer<
+  typeof translationInlineGroupPlanSchema
+>;
+
 export const translationRecordSchema = z.object({
   segmentId: z.string(),
   reuseKey: z.string().optional(),
@@ -11,6 +40,7 @@ export const translationRecordSchema = z.object({
   status: translationStatusSchema,
   provider: z.string(),
   updatedAt: z.string(),
+  inlineGroupPlan: translationInlineGroupPlanSchema.optional(),
 });
 
 export type TranslationRecord = z.infer<typeof translationRecordSchema>;
@@ -229,6 +259,7 @@ export type TranslationTaskMappingSegmentRef = z.infer<
 
 export const translationTaskMappingInlineCodeSpanSchema = z.object({
   text: z.string(),
+  domPath: z.string(),
 });
 
 export type TranslationTaskMappingInlineCodeSpan = z.infer<

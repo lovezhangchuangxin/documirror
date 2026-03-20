@@ -89,11 +89,11 @@ describe("extractSegmentsFromHtml", () => {
           }),
         ],
         text: "Use the `snap-always` utility together",
-        note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
+        note: "Treat text wrapped in backticks as code literals. Keep each inline code span unchanged. You may reorder inline code and surrounding text when needed for natural target-language syntax, but keep every code span exactly once.",
         inlineCodeSpans: [
-          {
+          expect.objectContaining({
             text: "snap-always",
-          },
+          }),
         ],
         textSlotIndices: [0, 1],
       },
@@ -120,11 +120,11 @@ describe("extractSegmentsFromHtml", () => {
           }),
         ],
         text: "`snap-always` is enabled",
-        note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
+        note: "Treat text wrapped in backticks as code literals. Keep each inline code span unchanged. You may reorder inline code and surrounding text when needed for natural target-language syntax, but keep every code span exactly once.",
         inlineCodeSpans: [
-          {
+          expect.objectContaining({
             text: "snap-always",
-          },
+          }),
         ],
         textSlotIndices: [1],
       },
@@ -135,11 +135,11 @@ describe("extractSegmentsFromHtml", () => {
           }),
         ],
         text: "Run `npm install`",
-        note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
+        note: "Treat text wrapped in backticks as code literals. Keep each inline code span unchanged. You may reorder inline code and surrounding text when needed for natural target-language syntax, but keep every code span exactly once.",
         inlineCodeSpans: [
-          {
+          expect.objectContaining({
             text: "npm install",
-          },
+          }),
         ],
         textSlotIndices: [0],
       },

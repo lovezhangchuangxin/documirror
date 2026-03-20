@@ -13,6 +13,9 @@ export type LooseNode = {
   name?: string;
   attribs?: Record<string, string>;
   children?: LooseNode[];
+  parent?: LooseNode | null;
+  prev?: LooseNode | null;
+  next?: LooseNode | null;
 };
 
 export type BuildSiteOptions = {

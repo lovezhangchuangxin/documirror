@@ -51,7 +51,8 @@ If automatic translation fails for a task, inspect \`reports/translation-run/<ta
 - Do not add explanations, notes, or extra commentary
 
 ### 2. Ordered IDs
-- Task \`content\` ids are always \`1, 2, 3, ...\`
+- Copy task \`content\` ids exactly as they appear in the task file
+- Full page tasks often use \`1, 2, 3, ...\`, but runtime chunks may keep original page ids
 - Result \`translations\` ids must stay in exactly the same order
 - Do not skip, duplicate, or renumber ids
 
@@ -62,9 +63,9 @@ If automatic translation fails for a task, inspect \`reports/translation-run/<ta
 ### 4. Inline Code Preservation
 - Backtick-wrapped text is inline code
 - Never translate inline code
-- Keep the same inline code spans in the same order
-- Keep surrounding natural language in the same slots before, between, and after inline code
-- Do not move words across inline code boundaries
+- Keep every inline code span exactly once
+- You may reorder inline code and surrounding natural language when needed for natural target-language syntax
+- Do not translate, drop, or duplicate inline code spans
 - Example: \`Use \`snap-always\` here\` -> \`这里使用 \`snap-always\`\`
 
 ### 5. Formatting Preservation
@@ -103,7 +104,7 @@ If automatic translation fails for a task, inspect \`reports/translation-run/<ta
 
 - \`taskId\` matches the claimed task
 - \`translations.length === content.length\`
-- \`translations[].id\` is strictly \`1..N\`
+- \`translations[].id\` exactly matches the task \`content[].id\` sequence
 - no missing, duplicate, or extra ids
 - no empty \`translatedText\`
 - leading list markers such as \`1.\`, \`-\`, and \`- [ ]\` are preserved
@@ -118,21 +119,22 @@ Verify may also warn when a translation is effectively identical to the source t
 If verify says:
 
 \`\`\`text
-[id_out_of_order] $.translations[4].id: Expected translation id "5" at position 5 but found "6"
+[id_out_of_order] $.translations[4].id: Expected translation id "44" at position 5 but found "45"
 \`\`\`
 
 Fix:
 
-- renumber the result ids to match the task file exactly
+- renumber the result ids to match the task file ids exactly and in the same order
 
 If verify says:
 
 \`\`\`text
-[inline_code_mismatch] $.translations[1].translatedText: Translation for id "2" must preserve inline code spans ["snap-always"] in the original order
+[inline_code_mismatch] $.translations[1].translatedText: Translation for id "2" must preserve inline code spans ["snap-always"] exactly
 \`\`\`
 
 Fix:
 
 - keep \`snap-always\` unchanged inside backticks and move only the surrounding natural language
+- if multiple inline code spans are present, you may reorder them for natural syntax, but every original inline code span must still appear exactly once
 `;
 }

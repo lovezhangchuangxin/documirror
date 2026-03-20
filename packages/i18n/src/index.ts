@@ -52,7 +52,11 @@ export function carryForwardTranslations(
   const pendingSegmentsByKey = new Map<string, SegmentRecord[]>();
 
   translations.forEach((translation) => {
-    if (!translation.reuseKey || translation.status === "draft") {
+    if (
+      !translation.reuseKey ||
+      translation.status === "draft" ||
+      translation.inlineGroupPlan
+    ) {
       return;
     }
 

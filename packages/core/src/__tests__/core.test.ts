@@ -17,6 +17,7 @@ vi.mock("@documirror/adapters-openai", () => ({
 
 import {
   applyTranslations,
+  buildMirror,
   extractMirror,
   getMirrorStatus,
   initMirrorRepository,
@@ -482,6 +483,86 @@ describe("documirror core pipeline", () => {
     );
   });
 
+  it("accepts reordered inline-code spans when the code set is preserved", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: {
+        ...createAiConfig(),
+        maxAttemptsPerTask: 2,
+      },
+      authToken: "secret-token",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><p>Here is a simple <code>&lt;input&gt;</code> with a correctly associated <code>&lt;label&gt;</code></p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const invalidDraft = {
+      schemaVersion: 2 as const,
+      taskId: "task_dc3d488a4e",
+      translations: [
+        {
+          id: "1",
+          translatedText: "这是带有正确关联 `<label>` 的简单 `<input>` 字段",
+        },
+      ],
+    };
+
+    mockTranslateTaskWithOpenAi.mockResolvedValueOnce({
+      rawText: JSON.stringify(invalidDraft),
+      draft: invalidDraft,
+    });
+
+    const summary = await runTranslations(repoDir);
+    expect(summary.successCount).toBe(1);
+    expect(summary.failureCount).toBe(0);
+    expect(mockTranslateTaskWithOpenAi).toHaveBeenCalledTimes(1);
+  });
+
   it("splits large page tasks into chunks and merges the final page result", async () => {
     const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
     createdDirs.push(repoDir);
@@ -551,10 +632,14 @@ describe("documirror core pipeline", () => {
       headingText?: string;
       itemStart?: number;
       itemEnd?: number;
+      itemIds: string[];
     }> = [];
     mockTranslateTaskWithOpenAi.mockImplementation(
       async (options: {
-        task: { taskId: string };
+        task: {
+          taskId: string;
+          content: Array<{ id: string }>;
+        };
         chunkContext?: {
           headingText?: string;
           itemStart: number;
@@ -566,6 +651,7 @@ describe("documirror core pipeline", () => {
           headingText: options.chunkContext?.headingText,
           itemStart: options.chunkContext?.itemStart,
           itemEnd: options.chunkContext?.itemEnd,
+          itemIds: options.task.content.map((item) => item.id),
         });
 
         if (options.task.taskId === "task_dc3d488a4e__chunk_1") {
@@ -596,18 +682,18 @@ describe("documirror core pipeline", () => {
             schemaVersion: 2,
             taskId: options.task.taskId,
             translations: [
-              { id: "1", translatedText: "部署" },
-              { id: "2", translatedText: "部署站点" },
-              { id: "3", translatedText: "检查输出" },
+              { id: "4", translatedText: "部署" },
+              { id: "5", translatedText: "部署站点" },
+              { id: "6", translatedText: "检查输出" },
             ],
           }),
           draft: {
             schemaVersion: 2 as const,
             taskId: options.task.taskId,
             translations: [
-              { id: "1", translatedText: "部署" },
-              { id: "2", translatedText: "部署站点" },
-              { id: "3", translatedText: "检查输出" },
+              { id: "4", translatedText: "部署" },
+              { id: "5", translatedText: "部署站点" },
+              { id: "6", translatedText: "检查输出" },
             ],
           },
         };
@@ -623,12 +709,14 @@ describe("documirror core pipeline", () => {
         headingText: "Install",
         itemStart: 1,
         itemEnd: 3,
+        itemIds: ["1", "2", "3"],
       },
       {
         taskId: "task_dc3d488a4e__chunk_2",
         headingText: "Deploy",
         itemStart: 4,
         itemEnd: 6,
+        itemIds: ["4", "5", "6"],
       },
     ]);
 
@@ -650,6 +738,104 @@ describe("documirror core pipeline", () => {
       { id: "5", translatedText: "部署站点" },
       { id: "6", translatedText: "检查输出" },
     ]);
+  });
+
+  it("reorders inline code nodes during site build when translation changes the natural word order", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: createAiConfig(),
+      authToken: "secret-token",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><p>Use the new <code>anchor</code> prop on the <code>Menu</code> and <code>Popover</code> components.</p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    mockTranslateTaskWithOpenAi.mockResolvedValueOnce({
+      rawText: JSON.stringify({
+        schemaVersion: 2,
+        taskId: "task_dc3d488a4e",
+        translations: [
+          {
+            id: "1",
+            translatedText:
+              "在 `Menu` 和 `Popover` 组件上使用新的 `anchor` 属性。",
+          },
+        ],
+      }),
+      draft: {
+        schemaVersion: 2,
+        taskId: "task_dc3d488a4e",
+        translations: [
+          {
+            id: "1",
+            translatedText:
+              "在 `Menu` 和 `Popover` 组件上使用新的 `anchor` 属性。",
+          },
+        ],
+      },
+    });
+
+    const runSummary = await runTranslations(repoDir, silentLogger);
+    expect(runSummary.successCount).toBe(1);
+
+    const applySummary = await applyTranslations(repoDir);
+    expect(applySummary.appliedFiles).toBe(1);
+
+    const buildSummary = await buildMirror(repoDir, silentLogger);
+    expect(buildSummary.pageCount).toBe(1);
+
+    const builtHtml = await readFile(
+      join(repoDir, "site", "index.html"),
+      "utf8",
+    );
+    expect(builtHtml).toContain(
+      "<p>在 <code>Menu</code> 和 <code>Popover</code> 组件上使用新的 <code>anchor</code> 属性。</p>",
+    );
   });
 
   it("retries only the failing chunk instead of rerunning the whole page", async () => {
@@ -719,7 +905,10 @@ describe("documirror core pipeline", () => {
 
     mockTranslateTaskWithOpenAi.mockImplementation(
       async (options: {
-        task: { taskId: string };
+        task: {
+          taskId: string;
+          content: Array<{ id: string }>;
+        };
         previousResponse?: string;
       }) => {
         if (options.task.taskId === "task_dc3d488a4e__chunk_1") {
@@ -751,16 +940,16 @@ describe("documirror core pipeline", () => {
               schemaVersion: 2,
               taskId: options.task.taskId,
               translations: [
-                { id: "1", translatedText: "部署" },
-                { id: "2", translatedText: "部署站点" },
+                { id: "4", translatedText: "部署" },
+                { id: "5", translatedText: "部署站点" },
               ],
             }),
             draft: {
               schemaVersion: 2 as const,
               taskId: options.task.taskId,
               translations: [
-                { id: "1", translatedText: "部署" },
-                { id: "2", translatedText: "部署站点" },
+                { id: "4", translatedText: "部署" },
+                { id: "5", translatedText: "部署站点" },
               ],
             },
           };
@@ -771,18 +960,18 @@ describe("documirror core pipeline", () => {
             schemaVersion: 2,
             taskId: options.task.taskId,
             translations: [
-              { id: "1", translatedText: "部署" },
-              { id: "2", translatedText: "部署站点" },
-              { id: "3", translatedText: "检查输出" },
+              { id: "4", translatedText: "部署" },
+              { id: "5", translatedText: "部署站点" },
+              { id: "6", translatedText: "检查输出" },
             ],
           }),
           draft: {
             schemaVersion: 2 as const,
             taskId: options.task.taskId,
             translations: [
-              { id: "1", translatedText: "部署" },
-              { id: "2", translatedText: "部署站点" },
-              { id: "3", translatedText: "检查输出" },
+              { id: "4", translatedText: "部署" },
+              { id: "5", translatedText: "部署站点" },
+              { id: "6", translatedText: "检查输出" },
             ],
           },
         };
@@ -800,6 +989,17 @@ describe("documirror core pipeline", () => {
       "task_dc3d488a4e__chunk_1",
       "task_dc3d488a4e__chunk_2",
       "task_dc3d488a4e__chunk_2",
+    ]);
+    expect(
+      mockTranslateTaskWithOpenAi.mock.calls.map((call) =>
+        (
+          call[0] as { task: { content: Array<{ id: string }> } }
+        ).task.content.map((item) => item.id),
+      ),
+    ).toEqual([
+      ["1", "2", "3"],
+      ["4", "5", "6"],
+      ["4", "5", "6"],
     ]);
     expect(
       (

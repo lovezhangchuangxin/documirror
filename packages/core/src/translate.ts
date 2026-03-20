@@ -26,6 +26,7 @@ import type {
   Manifest,
   SegmentRecord,
   TranslationDraftResultFile,
+  TranslationInlineGroupPlan,
   TranslationResultFile,
   TranslationTaskFile,
   TranslationTaskManifest,
@@ -117,6 +118,19 @@ type CandidateVerification = {
   errors: TranslationVerificationIssue[];
   warnings: TranslationVerificationIssue[];
 };
+
+type InlineGroupPlanBuildResult =
+  | {
+      ok: true;
+      plan: TranslationInlineGroupPlan;
+      projectedSegmentTexts: string[];
+      foundInlineCodeSpans: string[];
+    }
+  | {
+      ok: false;
+      reason: string;
+      foundInlineCodeSpans: string[];
+    };
 
 type RunTaskViewResult = {
   draft: TranslationDraftResultFile;
@@ -1421,7 +1435,7 @@ function compareManifestEntries(
 function validateTaskStructure(
   task: TranslationTaskFile,
 ): TranslationVerificationIssue[] {
-  const expectedIds = task.content.map((_, index) => String(index + 1));
+  const expectedIds = task.content.map((item) => item.id);
   return validateOrderedIds({
     actualIds: task.content.map((item) => item.id),
     expectedIds,
@@ -1478,7 +1492,7 @@ function validateTranslationsAgainstTask(
     | Pick<TranslationResultFile, "taskId" | "translations">,
 ): TranslationVerificationIssue[] {
   const issues: TranslationVerificationIssue[] = [];
-  const expectedIds = task.content.map((_, index) => String(index + 1));
+  const expectedIds = task.content.map((item) => item.id);
   const taskContentIndex = new Map(task.content.map((item) => [item.id, item]));
 
   if (mapping.items.length !== task.content.length) {
@@ -1574,19 +1588,21 @@ function validateTranslationsAgainstTask(
       return;
     }
 
-    const translatedSegments = splitByInlineCodeSpans(
+    const inlineGroupPlan = buildInlineGroupPlan(
+      mappedItem,
       item.translatedText,
-      mappedItem.inlineCodeSpans.map((inlineCodeSpan) => inlineCodeSpan.text),
-      mappedItem.textSlotIndices,
     );
-    if (!translatedSegments) {
+    if (!inlineGroupPlan.ok) {
+      const expectedInlineCodeSpans = mappedItem.inlineCodeSpans.map(
+        (inlineCodeSpan) => inlineCodeSpan.text,
+      );
       issues.push({
         code: "inline_code_mismatch",
-        message: `Translation for id "${item.id}" must preserve inline code spans ${JSON.stringify(
-          mappedItem.inlineCodeSpans.map(
-            (inlineCodeSpan) => inlineCodeSpan.text,
-          ),
-        )} in the original order`,
+        message: createInlineCodeMismatchMessage(
+          item.id,
+          expectedInlineCodeSpans,
+          inlineGroupPlan,
+        ),
         jsonPath: `$.translations[${index}].translatedText`,
       });
     }
@@ -1658,7 +1674,7 @@ function validateOrderedIds(options: {
         code: "id_out_of_order",
         message: `Expected ${itemLabel} "${expectedId}" at position ${
           index + 1
-        } but found "${id}"; renumber items to match 1..${expectedIds.length}`,
+        } but found "${id}"; renumber items to match the task ids in order`,
         jsonPath: `${elementPath}[${index}].id`,
       });
     }
@@ -1679,9 +1695,9 @@ function validateOrderedIds(options: {
       code: "id_missing",
       message: `Missing ${itemLabel}${missingIds.length > 1 ? "s" : ""} ${missingIds
         .map((id) => `"${id}"`)
-        .join(", ")}; add the missing items so ids run strictly from 1 to ${
-        expectedIds.length
-      }`,
+        .join(
+          ", ",
+        )}; add the missing items so ids exactly match the task ids in order`,
       jsonPath: collectionPath,
     });
   }
@@ -2003,14 +2019,10 @@ function applyMappedTranslation(options: {
     return 1;
   }
 
-  const translatedSegments = splitByInlineCodeSpans(
-    translatedText,
-    mappedItem.inlineCodeSpans.map((inlineCodeSpan) => inlineCodeSpan.text),
-    mappedItem.textSlotIndices,
-  );
-  if (!translatedSegments) {
+  const inlineGroupPlan = buildInlineGroupPlan(mappedItem, translatedText);
+  if (!inlineGroupPlan.ok) {
     logger.warn(
-      `Skipping inline-code translation ${mappedItem.id} in ${filePath} because inline code spans were not preserved in order`,
+      `Skipping inline-code translation ${mappedItem.id} in ${filePath} because required inline code spans were not preserved`,
     );
     return 0;
   }
@@ -2034,52 +2046,137 @@ function applyMappedTranslation(options: {
       segmentId: segmentRef.segmentId,
       reuseKey: currentSegment?.reuseKey,
       targetLocale,
-      translatedText: translatedSegments[index] ?? "",
+      translatedText: inlineGroupPlan.projectedSegmentTexts[index] ?? "",
       sourceHash: segmentRef.sourceHash,
       status: "accepted",
       provider,
       updatedAt: completedAt,
+      inlineGroupPlan: inlineGroupPlan.plan,
     });
   });
 
   return mappedItem.segments.length;
 }
 
-function splitByInlineCodeSpans(
+function buildInlineGroupPlan(
+  mappedItem: Extract<TranslationTaskMappingEntry, { kind: "inline-code" }>,
   translatedText: string,
-  expectedInlineCodeSpans: string[],
-  expectedTextSlotIndices: number[],
-): string[] | null {
+): InlineGroupPlanBuildResult {
   const parsed = parseInlineCodeSpans(translatedText);
   if (!parsed) {
-    return null;
+    return {
+      ok: false,
+      reason:
+        "current translation does not contain valid backtick-wrapped inline code spans",
+      foundInlineCodeSpans: [],
+    };
   }
 
-  if (parsed.inlineCodeSpans.length !== expectedInlineCodeSpans.length) {
-    return null;
-  }
-
-  if (
-    parsed.inlineCodeSpans.some(
-      (inlineCodeSpan, index) =>
-        inlineCodeSpan !== expectedInlineCodeSpans[index],
-    )
-  ) {
-    return null;
-  }
-
-  const expectedTextSlotIndexSet = new Set(expectedTextSlotIndices);
-  const hasUnexpectedTextInUnusedSlot = parsed.textSegments.some(
-    (textSegment, slotIndex) =>
-      !expectedTextSlotIndexSet.has(slotIndex) && textSegment.trim() !== "",
+  const matchedCodeParts = matchInlineCodeParts(
+    mappedItem.inlineCodeSpans,
+    parsed.inlineCodeSpans,
   );
-  if (hasUnexpectedTextInUnusedSlot) {
+  if (!matchedCodeParts) {
+    return {
+      ok: false,
+      reason: `found ${JSON.stringify(parsed.inlineCodeSpans)}`,
+      foundInlineCodeSpans: parsed.inlineCodeSpans,
+    };
+  }
+
+  const parts: TranslationInlineGroupPlan["parts"] = [];
+  parsed.textSegments.forEach((textSegment, index) => {
+    if (textSegment.length > 0) {
+      parts.push({
+        kind: "text",
+        translatedText: textSegment,
+      });
+    }
+
+    const codePart = matchedCodeParts[index];
+    if (codePart) {
+      parts.push(codePart);
+    }
+  });
+
+  return {
+    ok: true,
+    plan: {
+      groupId: mappedItem.segments[0]?.segmentId ?? mappedItem.id,
+      segmentIds: mappedItem.segments.map((segment) => segment.segmentId),
+      parts,
+    },
+    projectedSegmentTexts: projectTranslatedTextParts(
+      parsed.textSegments,
+      mappedItem.segments.length,
+    ),
+    foundInlineCodeSpans: parsed.inlineCodeSpans,
+  };
+}
+
+function matchInlineCodeParts(
+  expectedInlineCodeSpans: Array<{ text: string; domPath: string }>,
+  translatedInlineCodeSpans: string[],
+): Array<{ kind: "code"; text: string; domPath: string }> | null {
+  const expectedQueues = new Map<
+    string,
+    Array<{ text: string; domPath: string }>
+  >();
+
+  expectedInlineCodeSpans.forEach((inlineCodeSpan) => {
+    const queue = expectedQueues.get(inlineCodeSpan.text) ?? [];
+    queue.push(inlineCodeSpan);
+    expectedQueues.set(inlineCodeSpan.text, queue);
+  });
+
+  const matched: Array<{ kind: "code"; text: string; domPath: string }> = [];
+
+  for (const inlineCodeSpan of translatedInlineCodeSpans) {
+    const queue = expectedQueues.get(inlineCodeSpan);
+    const matchedInlineCodeSpan = queue?.shift();
+    if (!matchedInlineCodeSpan) {
+      return null;
+    }
+
+    matched.push({
+      kind: "code",
+      text: matchedInlineCodeSpan.text,
+      domPath: matchedInlineCodeSpan.domPath,
+    });
+  }
+
+  if ([...expectedQueues.values()].some((queue) => queue.length > 0)) {
     return null;
   }
 
-  return expectedTextSlotIndices.map(
-    (slotIndex) => parsed.textSegments[slotIndex] ?? "",
-  );
+  return matched;
+}
+
+function projectTranslatedTextParts(
+  textSegments: string[],
+  segmentCount: number,
+): string[] {
+  const projected = Array.from({ length: segmentCount }, () => "");
+  if (segmentCount === 0) {
+    return projected;
+  }
+
+  const visibleTextSegments = textSegments.filter((textSegment) => textSegment);
+  visibleTextSegments.forEach((textSegment, index) => {
+    const targetIndex = Math.min(index, segmentCount - 1);
+    projected[targetIndex] = `${projected[targetIndex] ?? ""}${textSegment}`;
+  });
+
+  return projected;
+}
+
+function createInlineCodeMismatchMessage(
+  itemId: string,
+  expectedInlineCodeSpans: string[],
+  buildResult: Extract<InlineGroupPlanBuildResult, { ok: false }>,
+): string {
+  const baseMessage = `Translation for id "${itemId}" must preserve inline code spans ${JSON.stringify(expectedInlineCodeSpans)} exactly`;
+  return `${baseMessage}; ${buildResult.reason}`;
 }
 
 function groupSegmentsByPage(segments: SegmentRecord[]): SegmentRecord[][] {

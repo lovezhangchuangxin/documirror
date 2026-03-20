@@ -118,27 +118,19 @@ export function createChunkTaskArtifacts(
   }
 
   const createdAt = task.createdAt;
-  const content = chunk.content.map((item, index) => ({
-    ...item,
-    id: String(index + 1),
-  }));
-  const mappingItems = chunk.mappingItems.map((item, index) => ({
-    ...item,
-    id: String(index + 1),
-  }));
 
   return {
     task: {
       ...task,
       taskId: chunk.chunkId,
       createdAt,
-      content,
+      content: chunk.content,
     },
     mapping: {
       ...mapping,
       taskId: chunk.chunkId,
       createdAt,
-      items: mappingItems,
+      items: chunk.mappingItems,
     },
     originalIds: chunk.originalIds,
   };
@@ -153,20 +145,34 @@ export function mergeChunkDrafts(options: {
   }>;
 }): TranslationDraftResultFile {
   const translations = options.chunkDrafts.flatMap(
-    ({ draft, originalIds }, chunkIndex) =>
-      draft.translations.map((item, index) => {
+    ({ draft, originalIds }, chunkIndex) => {
+      if (draft.translations.length !== originalIds.length) {
+        throw new Error(
+          `Chunk ${chunkIndex + 1} produced ${draft.translations.length} translations but expected ${originalIds.length}`,
+        );
+      }
+
+      return draft.translations.map((item, index) => {
         const originalId = originalIds[index];
         if (!originalId) {
           throw new Error(
             `Chunk ${chunkIndex + 1} produced more translations than expected`,
           );
         }
+        if (item.id !== originalId) {
+          throw new Error(
+            `Chunk ${chunkIndex + 1} produced id "${item.id}" at position ${
+              index + 1
+            } but expected "${originalId}"`,
+          );
+        }
 
         return {
-          id: originalId,
+          id: item.id,
           translatedText: item.translatedText,
         };
-      }),
+      });
+    },
   );
 
   return {

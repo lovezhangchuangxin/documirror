@@ -230,7 +230,7 @@ describe("adapters-openai", () => {
           {
             id: "1",
             text: "Use `snap-always` for % i items",
-            note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
+            note: "Treat text wrapped in backticks as code literals. Keep each inline code span unchanged. You may reorder inline code and surrounding text when needed for natural target-language syntax, but keep every code span exactly once.",
           },
         ],
       },
@@ -252,7 +252,7 @@ describe("adapters-openai", () => {
         {
           code: "inline_code_mismatch",
           message:
-            'Translation for id "1" must preserve inline code spans ["snap-always"] in the original order',
+            'Translation for id "1" must preserve inline code spans ["snap-always"] exactly',
           jsonPath: "$.translations[0].translatedText",
         },
         {
@@ -273,14 +273,13 @@ describe("adapters-openai", () => {
       "Preserve placeholders byte-for-byte, including spaces inside them.",
     );
     expect(systemPrompt).toContain(
-      "Do not move words across inline code spans;",
+      "Preserve every inline code span exactly once inside backticks.",
     );
     expect(userPrompt).toContain("Protected item checklist");
     expect(userPrompt).toContain('"preserveInlineCodeSpans": [');
     expect(userPrompt).toContain('"snap-always"');
     expect(userPrompt).toContain('"preservePlaceholders": [');
     expect(userPrompt).toContain('"% i"');
-    expect(userPrompt).toContain('"inlineCodeTextSlotLayout": [');
     expect(userPrompt).toContain(
       "Previous response that needs fixing. Use it as the base",
     );
@@ -292,8 +291,13 @@ describe("adapters-openai", () => {
     );
     expect(userPrompt).toContain('"validationErrors": [');
     expect(userPrompt).toContain(
-      'Translation for id \\"1\\" must preserve inline code spans [\\"snap-always\\"] in the original order',
+      'Translation for id \\"1\\" must preserve inline code spans [\\"snap-always\\"] exactly',
     );
+    expect(userPrompt).toContain('"currentInlineCodeSpans": []');
+    expect(userPrompt).toContain(
+      '"inlineCodeMismatchDetail": "Expected inline code spans [\\"snap-always\\"] but found []."',
+    );
+    expect(userPrompt).toContain('"inlineCodeRepairRule":');
   });
 
   it("adds chunk context to the prompt for split page tasks", async () => {
@@ -352,7 +356,7 @@ describe("adapters-openai", () => {
           {
             id: "2",
             text: "Second `snap-always` item",
-            note: "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.",
+            note: "Treat text wrapped in backticks as code literals. Keep each inline code span unchanged. You may reorder inline code and surrounding text when needed for natural target-language syntax, but keep every code span exactly once.",
           },
         ],
       },
@@ -378,7 +382,7 @@ describe("adapters-openai", () => {
         {
           code: "id_out_of_order",
           message:
-            'Expected translation "1" at position 1 but found "2"; renumber items to match 1..2',
+            'Expected translation "1" at position 1 but found "2"; renumber items to match the task ids in order',
           jsonPath: "$.translations[0].id",
         },
         {
@@ -390,7 +394,7 @@ describe("adapters-openai", () => {
         {
           code: "id_missing",
           message:
-            'Missing translation "1"; add the missing items so ids run strictly from 1 to 2',
+            'Missing translation "1"; add the missing items so ids exactly match the task ids in order',
           jsonPath: "$.translations",
         },
       ],
@@ -413,5 +417,63 @@ describe("adapters-openai", () => {
     );
     expect(userPrompt).toContain('"missingTaskId": "1"');
     expect(userPrompt).toContain('"validationErrors": [');
+  });
+
+  it("adds actual inline-code order diagnostics for swapped code spans", async () => {
+    mockCreate.mockResolvedValueOnce(
+      createChunkStream([
+        '{"schemaVersion":2,"taskId":"task_test","translations":[',
+        '{"id":"1","translatedText":"以下是带有正确关联 `<label>` 的简单 `<input>` 字段"}',
+        "]}",
+      ]),
+    );
+
+    await translateTaskWithOpenAi({
+      ...createOptions(),
+      task: {
+        ...createOptions().task,
+        content: [
+          {
+            id: "1",
+            text: "Here is a simple `<input>` with a correctly associated `<label>`",
+            note: "Treat text wrapped in backticks as code literals. Keep each inline code span unchanged. You may reorder inline code and surrounding text when needed for natural target-language syntax, but keep every code span exactly once.",
+          },
+        ],
+      },
+      previousResponse: JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: "task_test",
+          translations: [
+            {
+              id: "1",
+              translatedText:
+                "以下是带有正确关联 `<label>` 的简单 `<input>` 字段",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      verificationIssues: [
+        {
+          code: "inline_code_mismatch",
+          message:
+            'Translation for id "1" must preserve inline code spans ["<input>","<label>"] exactly; found ["other"]',
+          jsonPath: "$.translations[0].translatedText",
+        },
+      ],
+    });
+
+    const request = mockCreate.mock.calls[0]?.[0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const userPrompt = request.messages[1]?.content ?? "";
+
+    expect(userPrompt).toContain('"currentInlineCodeSpans": [');
+    expect(userPrompt).toContain('"<label>"');
+    expect(userPrompt).toContain('"<input>"');
+    expect(userPrompt).not.toContain('"inlineCodeMismatchDetail":');
+    expect(userPrompt).not.toContain('"inlineCodeRepairRule":');
   });
 });

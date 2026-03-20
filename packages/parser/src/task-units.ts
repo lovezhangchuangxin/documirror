@@ -8,6 +8,7 @@ import type { LooseNode } from "./types";
 
 export type TranslationTaskUnitInlineCodeSpan = {
   text: string;
+  domPath: string;
 };
 
 export type TranslationTaskUnit = {
@@ -26,6 +27,7 @@ type ChildDescriptor =
   | {
       kind: "code";
       text: string;
+      domPath: string;
     }
   | {
       kind: "other";
@@ -187,6 +189,7 @@ function buildTaskUnitFromRun(
     if (descriptor.kind === "code") {
       inlineCodeSpans.push({
         text: descriptor.text,
+        domPath: descriptor.domPath,
       });
       textSlotIndex += 1;
     }
@@ -230,7 +233,7 @@ function describeChild(
   }
 
   const text = $(child as never).text();
-  return text ? { kind: "code", text } : { kind: "other" };
+  return text ? { kind: "code", text, domPath } : { kind: "other" };
 }
 
 function assembleInlineCodeText(run: ChildDescriptor[]): string {
@@ -251,7 +254,7 @@ function assembleInlineCodeText(run: ChildDescriptor[]): string {
 }
 
 function createInlineCodeNote(): string {
-  return "Treat text wrapped in backticks as code literals, keep them unchanged in the same order, and do not move surrounding text across code boundaries.";
+  return "Treat text wrapped in backticks as code literals. Keep each inline code span unchanged. You may reorder inline code and surrounding text when needed for natural target-language syntax, but keep every code span exactly once.";
 }
 
 function renderInlineCodeSpan(text: string): string {
