@@ -53,7 +53,7 @@ describe("documirror core pipeline", () => {
     const snapshotPath = join(snapshotDir, "index.html");
     await writeFile(
       snapshotPath,
-      `<!doctype html><html><head><title>Docs</title></head><body><h1>Hello world</h1><img alt="Hero image" src="/hero.png" /></body></html>`,
+      `<!doctype html><html><head><title>Docs</title></head><body><p>Use the <code>snap-always</code> utility together</p><img alt="Hero image" src="/hero.png" /></body></html>`,
       "utf8",
     );
 
@@ -95,30 +95,112 @@ describe("documirror core pipeline", () => {
     const [taskFileName] = await (
       await import("node:fs/promises")
     ).readdir(taskDir);
-    const task = JSON.parse(
-      await readFile(join(taskDir, taskFileName), "utf8"),
-    ) as {
+    const taskBody = await readFile(join(taskDir, taskFileName), "utf8");
+    const task = JSON.parse(taskBody) as {
       taskId: string;
-      items: Array<{
-        segmentId: string;
-        sourceHash: string;
-        sourceText: string;
+      page: {
+        url: string;
+        title?: string;
+      };
+      content: Array<{
+        id: string;
+        text: string;
+        note?: string;
       }>;
     };
+    const taskMappingPath = join(
+      repoDir,
+      ".documirror",
+      "state",
+      "task-mappings",
+      `${task.taskId}.json`,
+    );
+    const taskMapping = JSON.parse(await readFile(taskMappingPath, "utf8")) as {
+      items: Array<
+        | {
+            id: string;
+            kind: "segment";
+            segment: {
+              segmentId: string;
+              sourceHash: string;
+            };
+          }
+        | {
+            id: string;
+            kind: "inline-code";
+            segments: Array<{
+              segmentId: string;
+              sourceHash: string;
+            }>;
+            inlineCodeSpans: Array<{
+              text: string;
+            }>;
+            textSlotIndices: number[];
+          }
+      >;
+    };
+
+    expect(task.page.url).toBe("https://docs.example.com/");
+    expect(task.content[0]).toEqual({
+      id: "1",
+      text: "Use the `snap-always` utility together",
+      note: "Treat text wrapped in backticks as code literals and keep it unchanged in the same order.",
+    });
+    expect(task.content[1]).toEqual({
+      id: "2",
+      text: "Hero image",
+      note: "<img> @alt",
+    });
+    expect(taskBody).not.toContain("segmentId");
+    expect(taskBody).not.toContain("sourceHash");
+    expect(taskMapping.items[0]?.id).toBe("1");
+    expect(taskMapping.items[0]).toEqual({
+      id: "1",
+      kind: "inline-code",
+      segments: [
+        expect.objectContaining({
+          segmentId: expect.any(String),
+          sourceHash: expect.any(String),
+        }),
+        expect.objectContaining({
+          segmentId: expect.any(String),
+          sourceHash: expect.any(String),
+        }),
+      ],
+      inlineCodeSpans: [
+        {
+          text: "snap-always",
+        },
+      ],
+      textSlotIndices: [0, 1],
+    });
+    expect(taskMapping.items[1]).toEqual({
+      id: "2",
+      kind: "segment",
+      segment: expect.objectContaining({
+        segmentId: expect.any(String),
+        sourceHash: expect.any(String),
+      }),
+    });
 
     await writeFile(
       join(repoDir, ".documirror", "tasks", "done", `${task.taskId}.json`),
       JSON.stringify(
         {
-          schemaVersion: 1,
+          schemaVersion: 2,
           taskId: task.taskId,
           provider: "test-provider",
           completedAt: new Date().toISOString(),
-          items: task.items.map((item) => ({
-            segmentId: item.segmentId,
-            sourceHash: item.sourceHash,
-            translatedText: `ZH:${item.sourceText}`,
-          })),
+          translations: [
+            {
+              id: "1",
+              translatedText: "一起使用 `snap-always` 工具",
+            },
+            {
+              id: "2",
+              translatedText: "主视觉图",
+            },
+          ],
         },
         null,
         2,
@@ -127,7 +209,26 @@ describe("documirror core pipeline", () => {
     );
 
     const applySummary = await applyTranslations(repoDir);
-    expect(applySummary.appliedSegments).toBe(task.items.length);
+    expect(applySummary.appliedSegments).toBe(3);
+    expect(await readdir(taskDir)).toEqual([]);
+    expect(
+      await readFile(
+        join(repoDir, ".documirror", "tasks", "applied", `${task.taskId}.json`),
+        "utf8",
+      ),
+    ).toContain('"schemaVersion": 2');
+    expect(
+      await readFile(
+        join(
+          repoDir,
+          ".documirror",
+          "tasks",
+          "applied",
+          `${task.taskId}.mapping.json`,
+        ),
+        "utf8",
+      ),
+    ).toContain('"segmentId"');
 
     const buildSummary = await buildMirror(repoDir);
     expect(buildSummary.pageCount).toBe(1);
@@ -136,7 +237,8 @@ describe("documirror core pipeline", () => {
       join(repoDir, "site", "index.html"),
       "utf8",
     );
-    expect(builtHtml).toContain("ZH:Hello world");
+    expect(builtHtml).toContain("一起使用 <code>snap-always</code> 工具");
+    expect(builtHtml).toContain('alt="主视觉图"');
     expect(builtHtml).toContain('lang="zh-CN"');
   });
 
@@ -279,6 +381,382 @@ describe("documirror core pipeline", () => {
     expect(await readFile(taskGuidePath, "utf8")).toBe("custom task guide\n");
   });
 
+  it("keeps full inline-code sentence context when only one surrounding segment is pending", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><p>Use the <code>snap-always</code> utility together</p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+
+    const segments = (
+      await readFile(
+        join(repoDir, ".documirror", "content", "segments.jsonl"),
+        "utf8",
+      )
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)) as Array<{
+      segmentId: string;
+      sourceHash: string;
+      sourceText: string;
+    }>;
+    const retainedSegment = segments.find(
+      (segment) => segment.sourceText === " utility together",
+    );
+    expect(retainedSegment).toBeDefined();
+    if (!retainedSegment) {
+      throw new Error("Expected retained segment to exist");
+    }
+
+    await writeFile(
+      join(repoDir, ".documirror", "content", "translations.jsonl"),
+      `${JSON.stringify({
+        segmentId: retainedSegment.segmentId,
+        targetLocale: "zh-CN",
+        translatedText: "工具一起使用",
+        sourceHash: retainedSegment.sourceHash,
+        status: "accepted",
+        provider: "test-provider",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+      "utf8",
+    );
+
+    const planSummary = await planTranslations(repoDir);
+    expect(planSummary.segmentCount).toBe(1);
+
+    const taskDir = join(repoDir, ".documirror", "tasks", "pending");
+    const [taskFileName] = await readdir(taskDir);
+    const task = JSON.parse(
+      await readFile(join(taskDir, taskFileName), "utf8"),
+    ) as {
+      content: Array<{
+        id: string;
+        text: string;
+      }>;
+    };
+    const taskId = taskFileName.replace(/\.json$/u, "");
+    const taskMapping = JSON.parse(
+      await readFile(
+        join(
+          repoDir,
+          ".documirror",
+          "state",
+          "task-mappings",
+          `${taskId}.json`,
+        ),
+        "utf8",
+      ),
+    ) as {
+      items: Array<{
+        kind: string;
+        segments?: Array<{
+          segmentId: string;
+        }>;
+      }>;
+    };
+
+    expect(task.content).toEqual([
+      expect.objectContaining({
+        id: "1",
+        text: "Use the `snap-always` utility together",
+      }),
+    ]);
+    expect(taskMapping.items[0]).toEqual({
+      kind: "inline-code",
+      id: "1",
+      segments: [
+        expect.objectContaining({
+          segmentId: expect.any(String),
+        }),
+        expect.objectContaining({
+          segmentId: expect.any(String),
+        }),
+      ],
+      inlineCodeSpans: [
+        {
+          text: "snap-always",
+        },
+      ],
+      textSlotIndices: [0, 1],
+    });
+  });
+
+  it("applies inline-code translations when code appears at the start or end of a sentence", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><p><code>snap-always</code> is enabled</p><p>Run <code>npm install</code></p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const taskDir = join(repoDir, ".documirror", "tasks", "pending");
+    const [taskFileName] = await readdir(taskDir);
+    const task = JSON.parse(
+      await readFile(join(taskDir, taskFileName), "utf8"),
+    ) as {
+      taskId: string;
+      content: Array<{
+        id: string;
+        text: string;
+      }>;
+    };
+
+    expect(task.content).toEqual([
+      expect.objectContaining({
+        id: "1",
+        text: "`snap-always` is enabled",
+      }),
+      expect.objectContaining({
+        id: "2",
+        text: "Run `npm install`",
+      }),
+    ]);
+
+    await writeFile(
+      join(repoDir, ".documirror", "tasks", "done", `${task.taskId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: task.taskId,
+          provider: "test-provider",
+          completedAt: new Date().toISOString(),
+          translations: [
+            {
+              id: "1",
+              translatedText: "`snap-always` 已启用",
+            },
+            {
+              id: "2",
+              translatedText: "运行 `npm install`",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const applySummary = await applyTranslations(repoDir);
+    expect(applySummary.appliedSegments).toBe(2);
+
+    await buildMirror(repoDir);
+    const builtHtml = await readFile(
+      join(repoDir, "site", "index.html"),
+      "utf8",
+    );
+    expect(builtHtml).toContain("<code>snap-always</code> 已启用");
+    expect(builtHtml).toContain("运行 <code>npm install</code>");
+  });
+
+  it("skips unreadable legacy result files without aborting apply", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><main><h1>Hello world</h1></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    const taskDir = join(repoDir, ".documirror", "tasks", "pending");
+    const [taskFileName] = await readdir(taskDir);
+    const task = JSON.parse(
+      await readFile(join(taskDir, taskFileName), "utf8"),
+    ) as {
+      taskId: string;
+      content: Array<{
+        id: string;
+        text: string;
+      }>;
+    };
+
+    await writeFile(
+      join(repoDir, ".documirror", "tasks", "done", "legacy.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          taskId: "legacy",
+          provider: "legacy-provider",
+          completedAt: new Date().toISOString(),
+          items: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "tasks", "done", `${task.taskId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          taskId: task.taskId,
+          provider: "test-provider",
+          completedAt: new Date().toISOString(),
+          translations: task.content.map((item) => ({
+            id: item.id,
+            translatedText: `ZH:${item.text}`,
+          })),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const applySummary = await applyTranslations(repoDir);
+    expect(applySummary.appliedFiles).toBe(1);
+    expect(
+      await readFile(
+        join(repoDir, ".documirror", "tasks", "done", "legacy.json"),
+        "utf8",
+      ),
+    ).toContain('"schemaVersion": 1');
+    expect(
+      await readFile(
+        join(repoDir, ".documirror", "tasks", "applied", `${task.taskId}.json`),
+        "utf8",
+      ),
+    ).toContain('"schemaVersion": 2');
+  });
+
   it("retains valid pending tasks when translate plan is re-run", async () => {
     const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
     createdDirs.push(repoDir);
@@ -335,6 +813,17 @@ describe("documirror core pipeline", () => {
     const taskDir = join(repoDir, ".documirror", "tasks", "pending");
     const [firstTaskFile] = await readdir(taskDir);
     const firstTaskBody = await readFile(join(taskDir, firstTaskFile), "utf8");
+    const firstTask = JSON.parse(firstTaskBody) as {
+      taskId: string;
+    };
+    const firstTaskMappingPath = join(
+      repoDir,
+      ".documirror",
+      "state",
+      "task-mappings",
+      `${firstTask.taskId}.json`,
+    );
+    const firstTaskMappingBody = await readFile(firstTaskMappingPath, "utf8");
 
     const secondPlan = await planTranslations(repoDir);
     const taskFiles = await readdir(taskDir);
@@ -343,6 +832,9 @@ describe("documirror core pipeline", () => {
     expect(taskFiles).toEqual([firstTaskFile]);
     expect(await readFile(join(taskDir, firstTaskFile), "utf8")).toBe(
       firstTaskBody,
+    );
+    expect(await readFile(firstTaskMappingPath, "utf8")).toBe(
+      firstTaskMappingBody,
     );
   });
 });

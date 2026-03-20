@@ -22,6 +22,7 @@ The current repository already provides a working v0.1 foundation with:
 - CLI commands for `init`, `crawl`, `extract`, `translate plan`, `translate apply`, `build`, `update`, `doctor`, and `status`
 - a `pnpm` workspace split into crawler, parser, i18n, builder, and CLI packages
 - segment-level incremental translation planning based on `sourceHash`
+- page-based translation task packs with short item ids for external agents
 - a file-queue adapter for third-party translation agents
 - local JSON/JSONL state stored under `.documirror/`
 
@@ -98,7 +99,8 @@ After `init`, a mirror repository uses this working structure:
 │   └── translations.jsonl
 ├── state/
 │   ├── assembly.json
-│   └── manifest.json
+│   ├── manifest.json
+│   └── task-mappings/
 └── tasks/
     ├── applied/
     ├── done/
@@ -236,10 +238,11 @@ Each task JSON includes:
 - target locale
 - translation instructions
 - glossary entries
-- segment IDs
-- source hashes
-- source text
-- context such as page URL, DOM path, and tag name
+- page URL and title
+- ordered page content items with short `id` values
+- source text and compact notes only where needed for context
+- inline code rendered with backticks so terminology stays in sentence context without being translated
+- unchanged neighboring text may be included when needed to keep a split sentence coherent around inline code
 
 External tools should write result files to:
 
@@ -252,9 +255,10 @@ Result files must include:
 - `taskId`
 - `provider`
 - `completedAt`
-- translated items keyed by `segmentId` and `sourceHash`
+- translated items keyed by the short task `id`
 
-`translate apply` validates the result schema and only accepts translations whose `sourceHash` still matches the current source segment.
+`translate apply` maps each short `id` back to internal `segmentId` and `sourceHash`, validates the result schema, and only accepts translations whose `sourceHash` still matches the current source segment.
+When a task item contains inline code such as `` `snap-always` ``, result text must preserve the same inline code spans and order so DocuMirror can split the translated sentence back around the original inline code nodes.
 
 ## Incremental Translation Model
 
@@ -264,7 +268,7 @@ Incremental behavior is segment-based, not page-based:
 - every normalized source text gets a `sourceHash`
 - when the source hash changes, the previous translation becomes stale
 - only new, stale, or missing accepted translations are exported in the next translation plan
-- compatible files already present under `.documirror/tasks/pending/` are retained across repeated planning runs
+- compatible pending page task files already present under `.documirror/tasks/pending/` are retained across repeated planning runs
 
 This keeps translation cost low when only a small portion of the source site changes.
 

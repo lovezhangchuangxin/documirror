@@ -22,6 +22,7 @@ DocuMirror 面向这样一类需求：
 - 提供 `init`、`crawl`、`extract`、`translate plan`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
 - 使用 `pnpm workspace` 组织 crawler、parser、i18n、builder、CLI 等独立包
 - 基于 `sourceHash` 的 segment 级增量翻译规划
+- 面向外部 agent 的按页面任务装配与短序号内容项
 - 通过文件队列适配第三方翻译 agent
 - 在 `.documirror/` 下使用本地 JSON/JSONL 状态
 
@@ -98,7 +99,8 @@ DocuMirror 面向这样一类需求：
 │   └── translations.jsonl
 ├── state/
 │   ├── assembly.json
-│   └── manifest.json
+│   ├── manifest.json
+│   └── task-mappings/
 └── tasks/
     ├── applied/
     ├── done/
@@ -236,10 +238,11 @@ crawler 相关设置位于 `.documirror/config.json`。
 - 目标语言
 - 翻译说明
 - glossary 条目
-- segment ID
-- source hash
-- 原文
-- 页面 URL、DOM 路径、标签名等上下文
+- 页面 URL 和标题
+- 按页面阅读顺序排列的短序号内容项
+- 原文，以及仅在必要时出现的简短上下文说明
+- 用反引号包裹的内联代码，用于在保留术语的同时提供完整句子上下文
+- 为了保证被 inline code 打断的句子连贯，任务项中可能会带上相邻但未变更的文本
 
 外部工具应将结果写入：
 
@@ -252,9 +255,10 @@ crawler 相关设置位于 `.documirror/config.json`。
 - `taskId`
 - `provider`
 - `completedAt`
-- 以 `segmentId` 和 `sourceHash` 对齐的翻译结果
+- 以任务短序号 `id` 对齐的翻译结果
 
-`translate apply` 会校验结果 schema，并且只接受 `sourceHash` 仍与当前源文本一致的翻译。
+`translate apply` 会先把短序号 `id` 映射回内部 `segmentId` 和 `sourceHash`，再校验结果 schema，并且只接受 `sourceHash` 仍与当前源文本一致的翻译。
+当任务内容中出现像 `` `snap-always` `` 这样的内联代码时，结果文本必须按原样保留这些 code span 及其顺序，DocuMirror 才能把整句译文重新拆回原始 inline code 两侧的文本节点。
 
 ## 增量翻译模型
 
@@ -264,7 +268,7 @@ crawler 相关设置位于 `.documirror/config.json`。
 - 每段归一化后的源文本都会生成 `sourceHash`
 - 当 `sourceHash` 变化时，旧翻译会变为 stale
 - 下一次翻译规划只会导出新增、过期或缺失已接受翻译的 segment
-- 对应当前内容的 `.documirror/tasks/pending/` 兼容任务会在重复规划时保留
+- 对应当前内容的 `.documirror/tasks/pending/` 兼容页面任务会在重复规划时保留
 
 这样当源站只改动少量内容时，翻译成本不会膨胀到整页级别。
 

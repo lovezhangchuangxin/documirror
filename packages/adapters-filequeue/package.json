@@ -16,6 +16,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@documirror/parser": "workspace:*",
     "@documirror/shared": "workspace:*",
     "zod": "^4.3.6"
   }

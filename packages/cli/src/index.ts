@@ -83,7 +83,7 @@ translate
   .action(async (options) => {
     await runWithSpinner("Planning translation tasks", async () => {
       const summary = await planTranslations(options.repo, defaultLogger);
-      return `Created ${summary.taskCount} tasks for ${summary.segmentCount} segments`;
+      return `Created ${summary.taskCount} page tasks for ${summary.segmentCount} segments`;
     });
   });
 

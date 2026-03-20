@@ -77,6 +77,7 @@ These behaviors are central to the current design and should be preserved unless
 
 - `segmentId` identifies a stable extraction binding for a page + DOM path + kind.
 - `sourceHash` represents the normalized source content used for incremental translation decisions.
+- external task/result files may use agent-friendly short item IDs, but core state must map them back to `segmentId` and `sourceHash` internally.
 - `translate plan` must only export segments that are new, stale, or missing accepted translations.
 - `translate apply` must reject stale results whose `sourceHash` no longer matches the current source segment.
 - `core` owns orchestration; feature logic should not be pushed into `cli`.

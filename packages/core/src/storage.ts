@@ -26,6 +26,7 @@ export async function ensureRepoStructure(paths: RepoPaths): Promise<void> {
     fs.ensureDir(dirname(paths.configPath)),
     fs.ensureDir(dirname(paths.manifestPath)),
     fs.ensureDir(dirname(paths.assemblyPath)),
+    fs.ensureDir(paths.taskMappingsDir),
     fs.ensureDir(paths.pagesCacheDir),
     fs.ensureDir(paths.assetsCacheDir),
     fs.ensureDir(dirname(paths.segmentsPath)),

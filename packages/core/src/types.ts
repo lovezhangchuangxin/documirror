@@ -7,6 +7,7 @@ export type RepoPaths = {
   manifestPath: string;
   assemblyPath: string;
   glossaryPath: string;
+  taskMappingsDir: string;
   pagesCacheDir: string;
   assetsCacheDir: string;
   segmentsPath: string;

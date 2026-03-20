@@ -1,51 +1,101 @@
 import type {
-  SegmentRecord,
   TranslationResultFile,
   TranslationTaskFile,
-  TranslationTaskItem,
+  TranslationTaskMappingFile,
 } from "@documirror/shared";
 import {
   createTimestamp,
-  translationTaskFileSchema,
   translationResultFileSchema,
+  translationTaskFileSchema,
+  translationTaskMappingFileSchema,
 } from "@documirror/shared";
+import type { TranslationTaskUnit } from "@documirror/parser";
 
-export function createTaskFile(
+export function createTaskBundle(
   taskId: string,
   sourceUrl: string,
   targetLocale: string,
-  items: TranslationTaskItem[],
-): TranslationTaskFile {
-  return translationTaskFileSchema.parse({
-    schemaVersion: 1,
-    taskId,
-    sourceUrl,
-    targetLocale,
-    createdAt: createTimestamp(),
-    instructions: {
-      translateTo: targetLocale,
-      preserveFormatting: true,
-      preservePlaceholders: true,
-    },
-    glossary: [],
-    items,
-  });
-}
+  units: TranslationTaskUnit[],
+): {
+  task: TranslationTaskFile;
+  mapping: TranslationTaskMappingFile;
+} {
+  if (units.length === 0) {
+    throw new Error("Cannot create a task bundle without task units");
+  }
 
-export function createTaskItems(
-  segments: SegmentRecord[],
-): TranslationTaskItem[] {
-  return segments.map((segment) => ({
-    segmentId: segment.segmentId,
-    sourceHash: segment.sourceHash,
-    sourceText: segment.sourceText,
-    context: {
-      pageUrl: segment.pageUrl,
-      domPath: segment.domPath,
-      tagName: segment.context.tagName,
-      pageTitle: segment.context.pageTitle,
-    },
+  const firstSegment = units[0]?.segments[0];
+  if (!firstSegment) {
+    throw new Error("Task bundle requires at least one segment");
+  }
+  const pageUrl = firstSegment.pageUrl;
+  const pageTitle = firstSegment.context.pageTitle;
+  const allSegments = units.flatMap((unit) => unit.segments);
+  if (allSegments.some((segment) => segment.pageUrl !== pageUrl)) {
+    throw new Error("Task bundle units must belong to the same page");
+  }
+
+  const createdAt = createTimestamp();
+  const content = units.map((unit, index) => ({
+    id: String(index + 1),
+    text: unit.text,
+    note: createTaskNote(unit),
   }));
+
+  return {
+    task: translationTaskFileSchema.parse({
+      schemaVersion: 2,
+      taskId,
+      sourceUrl,
+      targetLocale,
+      createdAt,
+      instructions: {
+        translateTo: targetLocale,
+        preserveFormatting: true,
+        preservePlaceholders: true,
+      },
+      glossary: [],
+      page: {
+        url: pageUrl,
+        title: pageTitle,
+      },
+      content,
+    }),
+    mapping: translationTaskMappingFileSchema.parse({
+      schemaVersion: 2,
+      taskId,
+      sourceUrl,
+      targetLocale,
+      createdAt,
+      page: {
+        url: pageUrl,
+      },
+      items: units.map((unit, index) => {
+        const id = String(index + 1);
+        if (unit.inlineCodeSpans.length === 0) {
+          return {
+            id,
+            kind: "segment",
+            segment: {
+              segmentId: unit.segments[0].segmentId,
+              sourceHash: unit.segments[0].sourceHash,
+            },
+          };
+        }
+
+        return {
+          id,
+          kind: "inline-code",
+          segments: unit.segments.map((segment) => ({
+            segmentId: segment.segmentId,
+            sourceHash: segment.sourceHash,
+          })),
+          inlineCodeSpans: unit.inlineCodeSpans,
+          textSlotIndices: unit.textSlotIndices,
+        };
+      }),
+    }),
+  };
 }
 
 export function parseResultFile(value: unknown): TranslationResultFile {
@@ -54,4 +104,27 @@ export function parseResultFile(value: unknown): TranslationResultFile {
 
 export function parseTaskFile(value: unknown): TranslationTaskFile {
   return translationTaskFileSchema.parse(value);
+}
+
+export function parseTaskMappingFile(
+  value: unknown,
+): TranslationTaskMappingFile {
+  return translationTaskMappingFileSchema.parse(value);
+}
+
+function createTaskNote(unit: TranslationTaskUnit): string | undefined {
+  if (unit.note) {
+    return unit.note;
+  }
+
+  const [segment] = unit.segments;
+  if (!segment || segment.kind === "text") {
+    return undefined;
+  }
+
+  if (segment.kind === "attr") {
+    return `<${segment.context.tagName}> @${segment.attributeName}`;
+  }
+
+  return `<${segment.context.tagName}> content`;
 }

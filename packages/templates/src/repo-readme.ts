@@ -72,7 +72,7 @@ pnpm documirror:doctor
 
 1. Run \`pnpm documirror:update\`
 2. Read task files from \`.documirror/tasks/pending/\`
-3. Translate each task item with your preferred AI agent
+3. Translate each page task with your preferred AI agent using the short item ids in the JSON, keeping any inline code wrapped in backticks unchanged
 4. Write result JSON files into \`.documirror/tasks/done/\`
 5. Run \`pnpm documirror:translate:apply\`
 6. Run \`pnpm documirror:build\`
