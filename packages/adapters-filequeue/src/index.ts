@@ -53,6 +53,10 @@ export function createTaskBundle(
         translateTo: targetLocale,
         preserveFormatting: true,
         preservePlaceholders: true,
+        preserveInlineCode: true,
+        applyGlossary: true,
+        noOmission: true,
+        noAddition: true,
       },
       glossary: [],
       page: {

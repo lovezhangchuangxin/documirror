@@ -50,17 +50,27 @@ export type TranslationTaskContentItem = z.infer<
   typeof translationTaskContentItemSchema
 >;
 
+export const translationTaskInstructionsSchema = z.object({
+  translateTo: z.string(),
+  preserveFormatting: z.boolean(),
+  preservePlaceholders: z.boolean(),
+  preserveInlineCode: z.boolean().default(true),
+  applyGlossary: z.boolean().default(true),
+  noOmission: z.boolean().default(true),
+  noAddition: z.boolean().default(true),
+});
+
+export type TranslationTaskInstructions = z.infer<
+  typeof translationTaskInstructionsSchema
+>;
+
 export const translationTaskFileSchema = z.object({
   schemaVersion: z.literal(2),
   taskId: z.string(),
   sourceUrl: z.string(),
   targetLocale: z.string(),
   createdAt: z.string(),
-  instructions: z.object({
-    translateTo: z.string(),
-    preserveFormatting: z.boolean(),
-    preservePlaceholders: z.boolean(),
-  }),
+  instructions: translationTaskInstructionsSchema,
   glossary: z.array(glossaryEntrySchema).default([]),
   page: z.object({
     url: z.string(),
