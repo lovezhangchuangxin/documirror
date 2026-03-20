@@ -10,6 +10,8 @@ import {
 } from "@documirror/shared";
 import {
   createDefaultConfig,
+  createMirrorRepoAgents,
+  createMirrorRepoClaude,
   createMirrorRepoPackageJson,
   createMirrorRepoReadme,
   createTaskGuide,
@@ -88,6 +90,16 @@ export async function initMirrorRepository(
   await writeScaffoldTextIfMissing(
     join(repoDir, "README.md"),
     createMirrorRepoReadme(siteUrl, targetLocale),
+    logger,
+  );
+  await writeScaffoldTextIfMissing(
+    join(repoDir, "AGENTS.md"),
+    createMirrorRepoAgents(siteUrl, targetLocale),
+    logger,
+  );
+  await writeScaffoldTextIfMissing(
+    join(repoDir, "CLAUDE.md"),
+    createMirrorRepoClaude(),
     logger,
   );
   logger.info(`Initialized mirror repository in ${repoDir}`);

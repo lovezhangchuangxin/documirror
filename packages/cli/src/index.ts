@@ -29,6 +29,7 @@ import {
   shouldFailCrawl,
   type CommandOutput,
 } from "./crawl-output";
+import { normalizeCliArgv } from "./argv";
 
 const program = new Command();
 
@@ -333,11 +334,18 @@ program
     console.log(`expired leases: ${status.expiredLeaseTaskCount}`);
   });
 
-program.parseAsync(process.argv).catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(pc.red(message));
-  process.exitCode = 1;
-});
+program
+  .parseAsync(
+    normalizeCliArgv(process.argv, {
+      stripForwardedOptionSeparator:
+        process.env.npm_lifecycle_event !== undefined,
+    }),
+  )
+  .catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(pc.red(message));
+    process.exitCode = 1;
+  });
 
 async function runWithSpinner(
   title: string,
