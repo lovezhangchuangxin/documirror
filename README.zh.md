@@ -60,7 +60,7 @@ DocuMirror 适合需要这些能力的文档团队：
 6. `translate apply`
    再次校验并把结果导入翻译存储
 7. `build`
-   把翻译内容重新写回 HTML，在 `site/` 下输出镜像站
+   把翻译内容重新写回 HTML，最后在 `site/` 下输出镜像站。对于 hydration 之后仍会把英文重新插回正文的站点，还可以显式开启 `build.runtimeReconciler`，让构建产物额外注入一个运行时兜底层，在浏览器里于 DOM 更新后重新修正文本文本节点和白名单属性。
 
 增量更新时，运行 `update`，然后按需重复翻译、应用和构建。
 

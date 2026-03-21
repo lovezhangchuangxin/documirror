@@ -6,6 +6,14 @@ import type { TranslationInlineGroupPlan } from "@documirror/shared";
 
 import { locateNode } from "./dom-path";
 import { rewriteLinks } from "./link-rewriter";
+import {
+  collectRuntimeReconcilerManifestForPage,
+  createRuntimeReconcilerAssetSource,
+  createRuntimeReconcilerPublicAssetPath,
+  hasRuntimeReconcilerEntries,
+  injectRuntimeReconcilerArtifacts,
+  RUNTIME_RECONCILER_ASSET_OUTPUT_PATH,
+} from "./runtime-reconciler";
 import type { BuildSiteOptions, BuildSiteResult, LooseNode } from "./types";
 
 export async function buildSite(
@@ -36,6 +44,14 @@ export async function buildSite(
   );
 
   let missingTranslations = 0;
+  let generatedAssetCount = 0;
+  let runtimeAssetWritten = false;
+  const runtimeAssetSource = config.build.runtimeReconciler.enabled
+    ? createRuntimeReconcilerAssetSource()
+    : "";
+  const runtimeAssetPublicPath = createRuntimeReconcilerPublicAssetPath(
+    config.build.basePath,
+  );
 
   for (const asset of Object.values(manifest.assets)) {
     const sourcePath = join(repoDir, asset.cachePath);
@@ -148,6 +164,30 @@ export async function buildSite(
     }
 
     rewriteLinks($, manifest, config, page.url);
+    const runtimeManifestResult = collectRuntimeReconcilerManifestForPage({
+      pageUrl: page.url,
+      config,
+      segments,
+      translationIndex,
+    });
+    if (hasRuntimeReconcilerEntries(runtimeManifestResult.manifest)) {
+      if (!runtimeAssetWritten) {
+        const runtimeAssetTargetPath = join(
+          siteDir,
+          RUNTIME_RECONCILER_ASSET_OUTPUT_PATH,
+        );
+        await fs.ensureDir(dirname(runtimeAssetTargetPath));
+        await fs.writeFile(runtimeAssetTargetPath, runtimeAssetSource, "utf8");
+        runtimeAssetWritten = true;
+        generatedAssetCount += 1;
+      }
+
+      injectRuntimeReconcilerArtifacts(
+        $,
+        runtimeManifestResult.manifest,
+        runtimeAssetPublicPath,
+      );
+    }
 
     const targetPath = join(siteDir, page.outputPath);
     await fs.ensureDir(dirname(targetPath));
@@ -157,7 +197,7 @@ export async function buildSite(
 
   return {
     pageCount: Object.keys(manifest.pages).length,
-    assetCount: Object.keys(manifest.assets).length,
+    assetCount: Object.keys(manifest.assets).length + generatedAssetCount,
     missingTranslations,
   };
 }

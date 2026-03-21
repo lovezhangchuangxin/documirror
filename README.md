@@ -60,7 +60,7 @@ The end-to-end workflow is:
 6. `translate apply`
    Re-validate and import accepted translation results into the translation store.
 7. `build`
-   Reinsert translated content into HTML and emit a translated static mirror under `site/`.
+   Reinsert translated content into HTML and emit a translated static mirror under `site/`. For sites whose client-side hydration reintroduces source-language text, you can opt into `build.runtimeReconciler`, which injects a runtime fallback that re-applies accepted body text and whitelisted attribute translations in the browser after DOM updates.
 
 For incremental updates, run `update`, then repeat translation, apply, and build as needed.
 

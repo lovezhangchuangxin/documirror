@@ -19,7 +19,7 @@ The goal is to keep a repeatable static-site translation pipeline:
 2. extract translatable HTML text and attributes
 3. run automatic API translation for queued task files
 4. apply accepted translations
-5. build a deployable translated static mirror
+5. build a deployable translated static mirror, with an opt-in runtime reconciler fallback for hydration-heavy pages
 
 ## Requirements
 

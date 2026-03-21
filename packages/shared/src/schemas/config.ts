@@ -21,8 +21,23 @@ export const selectorRulesSchema = z.object({
   exclude: z.array(z.string()).default([]),
 });
 
+export const buildRuntimeReconcilerConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  strategy: z.literal("dom-only").default("dom-only"),
+  scope: z.literal("body-and-attributes").default("body-and-attributes"),
+});
+
+export type BuildRuntimeReconcilerConfig = z.infer<
+  typeof buildRuntimeReconcilerConfigSchema
+>;
+
 export const buildConfigSchema = z.object({
   basePath: z.string().default("/"),
+  runtimeReconciler: buildRuntimeReconcilerConfigSchema.default({
+    enabled: false,
+    strategy: "dom-only",
+    scope: "body-and-attributes",
+  }),
 });
 
 export const mirrorAiChunkingConfigSchema = z.object({
@@ -135,6 +150,11 @@ export const mirrorConfigSchema = z.object({
     }),
   build: buildConfigSchema.default({
     basePath: "/",
+    runtimeReconciler: {
+      enabled: false,
+      strategy: "dom-only",
+      scope: "body-and-attributes",
+    },
   }),
   ai: mirrorAiConfigSchema.default({
     providerKind: "openai-compatible",

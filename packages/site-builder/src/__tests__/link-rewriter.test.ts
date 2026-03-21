@@ -69,6 +69,11 @@ describe("rewriteLinks", () => {
       },
       build: {
         basePath: "/mirror",
+        runtimeReconciler: {
+          enabled: false,
+          strategy: "dom-only",
+          scope: "body-and-attributes",
+        },
       },
       ai: {
         providerKind: "openai-compatible",

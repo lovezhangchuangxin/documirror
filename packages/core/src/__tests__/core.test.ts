@@ -838,6 +838,132 @@ describe("documirror core pipeline", () => {
     );
   });
 
+  it("injects runtime reconciliation fallback assets when enabled", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: createAiConfig(),
+      authToken: "secret-token",
+    });
+
+    const configPath = join(repoDir, ".documirror", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")) as {
+      build: {
+        runtimeReconciler?: {
+          enabled?: boolean;
+          scope?: string;
+          strategy?: string;
+        };
+      };
+    };
+    config.build.runtimeReconciler = {
+      enabled: true,
+      strategy: "dom-only",
+      scope: "body-and-attributes",
+    };
+    await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title><script>self.__next_f.push([1,"e:[[\\"$\\",\\"p\\",null,{\\"children\\":\\"Utilities for controlling background image position.\\"}]]\\n"])</script></head><body><main><p>Utilities for controlling background image position.</p></main></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    mockTranslateTaskWithOpenAi.mockResolvedValueOnce({
+      rawText: JSON.stringify({
+        schemaVersion: 2,
+        taskId: "task_dc3d488a4e",
+        translations: [
+          {
+            id: "1",
+            translatedText: "用于控制元素背景图位置的实用类。",
+          },
+        ],
+      }),
+      draft: {
+        schemaVersion: 2,
+        taskId: "task_dc3d488a4e",
+        translations: [
+          {
+            id: "1",
+            translatedText: "用于控制元素背景图位置的实用类。",
+          },
+        ],
+      },
+    });
+
+    const runSummary = await runTranslations(repoDir, silentLogger);
+    expect(runSummary.successCount).toBe(1);
+
+    const applySummary = await applyTranslations(repoDir);
+    expect(applySummary.appliedFiles).toBe(1);
+
+    const buildSummary = await buildMirror(repoDir, silentLogger);
+    expect(buildSummary.pageCount).toBe(1);
+    expect(buildSummary.assetCount).toBe(1);
+
+    const builtHtml = await readFile(
+      join(repoDir, "site", "index.html"),
+      "utf8",
+    );
+    const runtimeAsset = await readFile(
+      join(repoDir, "site", "_documirror", "runtime-reconciler.js"),
+      "utf8",
+    );
+
+    expect(builtHtml).toContain(`<p>用于控制元素背景图位置的实用类。</p>`);
+    expect(builtHtml).toContain(`id="__DOCUMIRROR_RECONCILER_DATA__"`);
+    expect(builtHtml).toContain(
+      `src="/_documirror/runtime-reconciler.js" data-documirror-runtime-reconciler="true"`,
+    );
+    expect(runtimeAsset).toContain(`MutationObserver`);
+    expect(runtimeAsset).not.toContain(`__next_f`);
+    expect(builtHtml).toContain(
+      `\\"children\\":\\"Utilities for controlling background image position.\\"`,
+    );
+  });
+
   it("retries only the failing chunk instead of rerunning the whole page", async () => {
     const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
     createdDirs.push(repoDir);

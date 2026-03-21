@@ -9,7 +9,7 @@ This repository stores the translated mirror workflow for:
 - Source site: ${siteUrl}
 - Target locale: ${targetLocale}
 
-Use this repository to crawl the source docs site, translate queued task files, and build a deployable translated static mirror.
+Use this repository to crawl the source docs site, translate queued task files, and build a deployable translated static mirror. If client-side hydration restores source-language copy, you can opt into the runtime reconciler fallback in \`.documirror/config.json\`.
 
 Detailed repository rules live in \`AGENTS.md\`. Translation-task-specific instructions live in \`.documirror/TASKS.md\`.
 

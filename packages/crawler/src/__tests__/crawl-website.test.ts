@@ -301,6 +301,11 @@ function createConfig(
     },
     build: {
       basePath: "/",
+      runtimeReconciler: {
+        enabled: false,
+        strategy: "dom-only",
+        scope: "body-and-attributes",
+      },
     },
     ai: {
       providerKind: "openai-compatible",
