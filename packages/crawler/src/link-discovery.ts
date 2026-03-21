@@ -2,7 +2,7 @@ import { URL } from "node:url";
 
 import { load } from "cheerio";
 
-import { normalizeUrl } from "@documirror/shared";
+import { extractCssUrlReferences, normalizeUrl } from "@documirror/shared";
 
 import type { InvalidLinkReference, LinkDiscoveryResult } from "./types";
 
@@ -70,6 +70,17 @@ export function discoverPageResources(
       .forEach((candidate) => {
         collect(assetUrls, candidate, element.tagName, "srcset");
       });
+  });
+
+  $("[style]").each((_, element) => {
+    const style = $(element).attr("style");
+    if (!style) {
+      return;
+    }
+
+    extractCssUrlReferences(style).forEach(({ value }) => {
+      collect(assetUrls, value, element.tagName, "style");
+    });
   });
 
   return {

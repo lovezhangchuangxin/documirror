@@ -2,7 +2,7 @@ import { URL } from "node:url";
 
 import type { CheerioAPI } from "cheerio";
 
-import { normalizeUrl } from "@documirror/shared";
+import { normalizeUrl, rewriteCssUrls } from "@documirror/shared";
 import type { Manifest, MirrorConfig } from "@documirror/shared";
 
 export type LinkRewriteIndex = {
@@ -49,6 +49,20 @@ export function rewriteLinks(
       $(element).attr("srcset", rewritten);
     }
   });
+
+  $("[style]").each((_, element) => {
+    const style = $(element).attr("style");
+    if (!style) {
+      return;
+    }
+
+    const rewritten = rewriteCssUrls(style, (rawUrl) =>
+      rewriteUrl(rawUrl, pageUrl, pageMap, assetMap),
+    );
+    if (rewritten !== style) {
+      $(element).attr("style", rewritten);
+    }
+  });
 }
 
 export function createLinkRewriteIndex(
@@ -86,14 +100,19 @@ function rewriteUrl(
     return null;
   }
 
-  const resolved = new URL(rawValue, sourceUrl);
-  const normalized = normalizeUrl(resolved.toString());
-  const rewritten = pageMap.get(normalized) ?? assetMap.get(normalized) ?? null;
-  if (!rewritten) {
+  try {
+    const resolved = new URL(rawValue, sourceUrl);
+    const normalized = normalizeUrl(resolved.toString());
+    const rewritten =
+      pageMap.get(normalized) ?? assetMap.get(normalized) ?? null;
+    if (!rewritten) {
+      return null;
+    }
+
+    return `${rewritten}${resolved.hash}`;
+  } catch {
     return null;
   }
-
-  return `${rewritten}${resolved.hash}`;
 }
 
 function rewriteSrcset(

@@ -105,4 +105,163 @@ describe("rewriteLinks", () => {
       `/mirror/${hero1OutputPath} 1x, /mirror/${hero2OutputPath} 2x`,
     );
   });
+
+  it("rewrites asset URLs inside inline style attributes", () => {
+    const cloudsUrl = "https://docs.example.com/_next/static/media/clouds.svg";
+    const heroUrl = "https://docs.example.com/images/hero.png?v=1";
+    const cloudsOutputPath = urlToAssetOutputPath(cloudsUrl);
+    const heroOutputPath = urlToAssetOutputPath(heroUrl);
+    const manifest: Manifest = {
+      sourceUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      generatedAt: new Date().toISOString(),
+      pages: {},
+      assets: {
+        [cloudsUrl]: {
+          url: cloudsUrl,
+          cachePath: `.documirror/cache/assets/${cloudsOutputPath}`,
+          outputPath: cloudsOutputPath,
+          contentHash: "hash-clouds",
+          contentType: "image/svg+xml",
+        },
+        [heroUrl]: {
+          url: heroUrl,
+          cachePath: `.documirror/cache/assets/${heroOutputPath}`,
+          outputPath: heroOutputPath,
+          contentHash: "hash-hero",
+          contentType: "image/png",
+        },
+      },
+    };
+    const config: MirrorConfig = {
+      sourceUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      entryUrls: ["https://docs.example.com"],
+      includePatterns: [],
+      excludePatterns: [],
+      crawlConcurrency: 4,
+      requestTimeoutMs: 15_000,
+      requestRetryCount: 2,
+      requestRetryDelayMs: 500,
+      requestHeaders: {},
+      selectors: {
+        include: [],
+        exclude: [],
+      },
+      attributeRules: {
+        translate: ["title", "alt", "aria-label", "placeholder"],
+        ignore: [],
+      },
+      build: {
+        basePath: "/mirror",
+        runtimeReconciler: {
+          enabled: false,
+          strategy: "dom-only",
+          scope: "body-and-attributes",
+        },
+      },
+      ai: {
+        providerKind: "openai-compatible",
+        llmProvider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        modelName: "gpt-4.1-mini",
+        authTokenEnvVar: "DOCUMIRROR_AI_AUTH_TOKEN",
+        concurrency: 4,
+        requestTimeoutMs: 60_000,
+        maxAttemptsPerTask: 3,
+        temperature: 0.2,
+        chunking: {
+          enabled: true,
+          strategy: "structural",
+          maxItemsPerChunk: 80,
+          softMaxSourceCharsPerChunk: 6_000,
+          hardMaxSourceCharsPerChunk: 9_000,
+        },
+      },
+    };
+    const $ = load(
+      `<main><div style="background-image: url('/_next/static/media/clouds.svg'); mask-image: url(&quot;/images/hero.png?v=1&quot;); border-image: url(data:image/png;base64,abc);"></div></main>`,
+    );
+
+    rewriteLinks($, manifest, config, "https://docs.example.com/guide");
+
+    expect($("div").attr("style")).toBe(
+      `background-image: url('/mirror/${cloudsOutputPath}'); mask-image: url("/mirror/${heroOutputPath}"); border-image: url(data:image/png;base64,abc);`,
+    );
+  });
+
+  it("leaves non-literal CSS url() values unchanged", () => {
+    const heroUrl = "https://docs.example.com/images/hero.png?v=1";
+    const heroOutputPath = urlToAssetOutputPath(heroUrl);
+    const manifest: Manifest = {
+      sourceUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      generatedAt: new Date().toISOString(),
+      pages: {},
+      assets: {
+        [heroUrl]: {
+          url: heroUrl,
+          cachePath: `.documirror/cache/assets/${heroOutputPath}`,
+          outputPath: heroOutputPath,
+          contentHash: "hash-hero",
+          contentType: "image/png",
+        },
+      },
+    };
+    const config: MirrorConfig = {
+      sourceUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      entryUrls: ["https://docs.example.com"],
+      includePatterns: [],
+      excludePatterns: [],
+      crawlConcurrency: 4,
+      requestTimeoutMs: 15_000,
+      requestRetryCount: 2,
+      requestRetryDelayMs: 500,
+      requestHeaders: {},
+      selectors: {
+        include: [],
+        exclude: [],
+      },
+      attributeRules: {
+        translate: ["title", "alt", "aria-label", "placeholder"],
+        ignore: [],
+      },
+      build: {
+        basePath: "/mirror",
+        runtimeReconciler: {
+          enabled: false,
+          strategy: "dom-only",
+          scope: "body-and-attributes",
+        },
+      },
+      ai: {
+        providerKind: "openai-compatible",
+        llmProvider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        modelName: "gpt-4.1-mini",
+        authTokenEnvVar: "DOCUMIRROR_AI_AUTH_TOKEN",
+        concurrency: 4,
+        requestTimeoutMs: 60_000,
+        maxAttemptsPerTask: 3,
+        temperature: 0.2,
+        chunking: {
+          enabled: true,
+          strategy: "structural",
+          maxItemsPerChunk: 80,
+          softMaxSourceCharsPerChunk: 6_000,
+          hardMaxSourceCharsPerChunk: 9_000,
+        },
+      },
+    };
+    const $ = load(
+      `<main><div style="background-image: url(var(--hero-url)); mask-image: url('/images/hero.png?v=1');"></div></main>`,
+    );
+
+    rewriteLinks($, manifest, config, "https://docs.example.com/guide");
+
+    expect($("div").attr("style")).toBe(
+      `background-image: url(var(--hero-url)); mask-image: url('/mirror/${heroOutputPath}');`,
+    );
+  });
 });

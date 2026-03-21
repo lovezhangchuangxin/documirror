@@ -167,6 +167,92 @@ describe("crawlWebsite", () => {
     expect(result.assetCount).toBe(0);
   });
 
+  it("discovers asset URLs from inline style background images", async () => {
+    const crawledPages: Array<{ url: string; assetRefs: string[] }> = [];
+
+    axiosGetMock.mockImplementation(async (url: string) => {
+      switch (url) {
+        case "https://docs.example.com/robots.txt":
+          return textResponse("User-agent: *\nAllow: /\n");
+        case "https://docs.example.com/":
+          return htmlResponse(
+            `<!doctype html><html><body><div style="background-image: url(&quot;/_next/static/media/clouds.d6356ada.svg&quot;); background: url('/hero.png') no-repeat center;"></div></body></html>`,
+          );
+        case "https://docs.example.com/_next/static/media/clouds.d6356ada.svg":
+        case "https://docs.example.com/hero.png":
+          return assetResponse();
+        default:
+          throw new Error(`Unexpected URL: ${url}`);
+      }
+    });
+
+    const result = await crawlWebsite(
+      createConfig("https://docs.example.com/", 2),
+      silentLogger,
+      {
+        onPage(page) {
+          crawledPages.push({
+            url: page.url,
+            assetRefs: page.assetRefs,
+          });
+        },
+      },
+    );
+
+    expect(result.pageCount).toBe(1);
+    expect(result.assetCount).toBe(2);
+    expect(crawledPages).toEqual([
+      {
+        url: "https://docs.example.com/",
+        assetRefs: [
+          "https://docs.example.com/_next/static/media/clouds.d6356ada.svg",
+          "https://docs.example.com/hero.png",
+        ],
+      },
+    ]);
+  });
+
+  it("ignores non-literal CSS url() values in inline styles", async () => {
+    const crawledPages: Array<{ url: string; assetRefs: string[] }> = [];
+
+    axiosGetMock.mockImplementation(async (url: string) => {
+      switch (url) {
+        case "https://docs.example.com/robots.txt":
+          return textResponse("User-agent: *\nAllow: /\n");
+        case "https://docs.example.com/":
+          return htmlResponse(
+            `<!doctype html><html><body><div style="background-image: url(var(--hero-url)); mask-image: url('/hero.png');"></div></body></html>`,
+          );
+        case "https://docs.example.com/hero.png":
+          return assetResponse();
+        default:
+          throw new Error(`Unexpected URL: ${url}`);
+      }
+    });
+
+    const result = await crawlWebsite(
+      createConfig("https://docs.example.com/", 2),
+      silentLogger,
+      {
+        onPage(page) {
+          crawledPages.push({
+            url: page.url,
+            assetRefs: page.assetRefs,
+          });
+        },
+      },
+    );
+
+    expect(result.pageCount).toBe(1);
+    expect(result.assetCount).toBe(1);
+    expect(crawledPages).toEqual([
+      {
+        url: "https://docs.example.com/",
+        assetRefs: ["https://docs.example.com/hero.png"],
+      },
+    ]);
+  });
+
   it("reports live page and asset counts while crawling", async () => {
     const onProgress = vi.fn();
 
