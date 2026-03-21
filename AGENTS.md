@@ -201,6 +201,7 @@ Documentation ownership rules:
 - `AGENTS.md` is contributor-facing and should capture repository conventions, engineering rules, and agent guidance.
 - User-facing behavior changes should update both README files.
 - Repository process changes should update `AGENTS.md`.
+- Keep CLI invocation examples aligned across `README.md`, `README.zh.md`, and `AGENTS.md` when the recommended local usage workflow changes.
 - Do not move contribution rules such as commit conventions back into README unless they become directly relevant to end users.
 
 ## Common Commands
@@ -219,10 +220,13 @@ pnpm typecheck
 pnpm test
 ```
 
-Show CLI help:
+Build and register the CLI globally:
 
 ```bash
-node packages/cli/dist/index.mjs --help
+pnpm build
+cd packages/cli
+pnpm link --global
+documirror --help
 ```
 
 ## Current Gaps

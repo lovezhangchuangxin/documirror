@@ -142,97 +142,102 @@ pnpm typecheck
 pnpm test
 ```
 
-查看 CLI 帮助：
+构建并全局注册 CLI：
 
 ```bash
-node packages/cli/dist/index.mjs --help
+pnpm build
+cd packages/cli
+pnpm link --global
+documirror --help
 ```
 
 ## CLI 快速开始
 
+完成上面的全局链接后，后续都使用 `documirror` 命令。
+
 交互式初始化镜像仓库：
 
 ```bash
-node packages/cli/dist/index.mjs init --repo ./my-mirror
+documirror init --repo ./my-mirror
 ```
 
 后续修改 AI 配置：
 
 ```bash
-node packages/cli/dist/index.mjs config ai --repo ./my-mirror
+documirror config ai --repo ./my-mirror
 ```
 
 抓取源站：
 
 ```bash
-node packages/cli/dist/index.mjs crawl --repo ./my-mirror
+documirror crawl --repo ./my-mirror
 ```
 
 抽取可翻译内容：
 
 ```bash
-node packages/cli/dist/index.mjs extract --repo ./my-mirror
+documirror extract --repo ./my-mirror
 ```
 
 生成翻译任务：
 
 ```bash
-node packages/cli/dist/index.mjs translate plan --repo ./my-mirror
+documirror translate plan --repo ./my-mirror
 ```
 
 运行自动翻译：
 
 ```bash
-node packages/cli/dist/index.mjs translate run --repo ./my-mirror
+documirror translate run --repo ./my-mirror
 ```
 
 调试耗时过长或看起来卡住的翻译运行：
 
 ```bash
-node packages/cli/dist/index.mjs translate run --repo ./my-mirror --debug
+documirror translate run --repo ./my-mirror --debug
 ```
 
 如需检查生成结果，可单独校验：
 
 ```bash
-node packages/cli/dist/index.mjs translate verify --repo ./my-mirror --task <taskId>
+documirror translate verify --repo ./my-mirror --task <taskId>
 ```
 
 导入翻译结果：
 
 ```bash
-node packages/cli/dist/index.mjs translate apply --repo ./my-mirror
+documirror translate apply --repo ./my-mirror
 ```
 
 分析较慢的导入阶段：
 
 ```bash
-node packages/cli/dist/index.mjs translate apply --repo ./my-mirror --profile
+documirror translate apply --repo ./my-mirror --profile
 ```
 
 构建翻译镜像：
 
 ```bash
-node packages/cli/dist/index.mjs build --repo ./my-mirror
+documirror build --repo ./my-mirror
 ```
 
 分析较慢的构建阶段：
 
 ```bash
-node packages/cli/dist/index.mjs build --repo ./my-mirror --profile
+documirror build --repo ./my-mirror --profile
 ```
 
 运行增量流水线：
 
 ```bash
-node packages/cli/dist/index.mjs update --repo ./my-mirror
+documirror update --repo ./my-mirror
 ```
 
 检查仓库健康状态：
 
 ```bash
-node packages/cli/dist/index.mjs doctor --repo ./my-mirror
-node packages/cli/dist/index.mjs status --repo ./my-mirror
+documirror doctor --repo ./my-mirror
+documirror status --repo ./my-mirror
 ```
 
 ## AI 配置

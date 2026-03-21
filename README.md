@@ -142,13 +142,7 @@ pnpm typecheck
 pnpm test
 ```
 
-Show CLI help:
-
-```bash
-node packages/cli/dist/index.mjs --help
-```
-
-Install the CLI globally for local debugging:
+Build and register the CLI globally:
 
 ```bash
 pnpm build
@@ -159,89 +153,91 @@ documirror --help
 
 ## CLI Quick Start
 
+After the global link step above, run the CLI with `documirror`.
+
 Initialize a mirror repository interactively:
 
 ```bash
-node packages/cli/dist/index.mjs init --repo ./my-mirror
+documirror init --repo ./my-mirror
 ```
 
 Update AI settings later:
 
 ```bash
-node packages/cli/dist/index.mjs config ai --repo ./my-mirror
+documirror config ai --repo ./my-mirror
 ```
 
 Crawl the source site:
 
 ```bash
-node packages/cli/dist/index.mjs crawl --repo ./my-mirror
+documirror crawl --repo ./my-mirror
 ```
 
 Extract translatable content:
 
 ```bash
-node packages/cli/dist/index.mjs extract --repo ./my-mirror
+documirror extract --repo ./my-mirror
 ```
 
 Generate translation tasks:
 
 ```bash
-node packages/cli/dist/index.mjs translate plan --repo ./my-mirror
+documirror translate plan --repo ./my-mirror
 ```
 
 Run automatic translation:
 
 ```bash
-node packages/cli/dist/index.mjs translate run --repo ./my-mirror
+documirror translate run --repo ./my-mirror
 ```
 
 Debug a slow or stuck translation run:
 
 ```bash
-node packages/cli/dist/index.mjs translate run --repo ./my-mirror --debug
+documirror translate run --repo ./my-mirror --debug
 ```
 
 Verify a generated result if needed:
 
 ```bash
-node packages/cli/dist/index.mjs translate verify --repo ./my-mirror --task <taskId>
+documirror translate verify --repo ./my-mirror --task <taskId>
 ```
 
 Apply translated results:
 
 ```bash
-node packages/cli/dist/index.mjs translate apply --repo ./my-mirror
+documirror translate apply --repo ./my-mirror
 ```
 
 Profile a slow apply step:
 
 ```bash
-node packages/cli/dist/index.mjs translate apply --repo ./my-mirror --profile
+documirror translate apply --repo ./my-mirror --profile
 ```
 
 Build the translated mirror:
 
 ```bash
-node packages/cli/dist/index.mjs build --repo ./my-mirror
+documirror build --repo ./my-mirror
 ```
 
 Profile a slow build:
 
 ```bash
-node packages/cli/dist/index.mjs build --repo ./my-mirror --profile
+documirror build --repo ./my-mirror --profile
 ```
 
 Run the incremental pipeline:
 
 ```bash
-node packages/cli/dist/index.mjs update --repo ./my-mirror
+documirror update --repo ./my-mirror
 ```
 
 Inspect repository health:
 
 ```bash
-node packages/cli/dist/index.mjs doctor --repo ./my-mirror
-node packages/cli/dist/index.mjs status --repo ./my-mirror
+documirror doctor --repo ./my-mirror
+documirror status --repo ./my-mirror
 ```
 
 ## AI Configuration
