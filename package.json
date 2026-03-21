@@ -8,6 +8,11 @@
   "engines": {
     "node": ">=20"
   },
+  "license": "MIT",
+  "author": {
+    "name": "keqing",
+    "email": "2911331070@qq.com"
+  },
   "scripts": {
     "build": "pnpm -r --filter './packages/*' build",
     "clean": "pnpm -r --filter './packages/*' clean",
