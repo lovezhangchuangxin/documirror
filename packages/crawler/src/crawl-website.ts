@@ -228,7 +228,11 @@ export async function crawlWebsite(
         return;
       }
 
+      // Entry URLs (discoveredFrom is null) are always crawled regardless of includePatterns.
+      // Only discovered links are subject to pattern filtering.
+      const isEntryUrl = discoveredFrom === null;
       if (
+        !isEntryUrl &&
         !shouldIncludeUrl(
           normalized,
           config.includePatterns,
