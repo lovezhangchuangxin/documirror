@@ -11,3 +11,13 @@ export type Logger = {
   warn: (message: string) => void;
   error: (message: string) => void;
 };
+
+export type CommandProfileStep = {
+  label: string;
+  durationMs: number;
+};
+
+export type CommandProfile = {
+  totalDurationMs: number;
+  steps: CommandProfileStep[];
+};

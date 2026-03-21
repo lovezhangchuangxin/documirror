@@ -1,5 +1,6 @@
 import type {
   AssemblyMap,
+  CommandProfile,
   Logger,
   Manifest,
   MirrorConfig,
@@ -26,10 +27,12 @@ export type BuildSiteOptions = {
   assemblyMaps: AssemblyMap[];
   translations: TranslationRecord[];
   logger: Logger;
+  profile?: boolean;
 };
 
 export type BuildSiteResult = {
   pageCount: number;
   assetCount: number;
   missingTranslations: number;
+  profile?: CommandProfile;
 };

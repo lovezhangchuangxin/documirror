@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -260,9 +267,20 @@ describe("documirror core pipeline", () => {
     const verifySummary = await verifyTranslationTask(repoDir, taskId);
     expect(verifySummary.ok).toBe(true);
 
-    const applySummary = await applyTranslations(repoDir);
+    const applySummary = await applyTranslations(repoDir, silentLogger, {
+      profile: true,
+    });
     expect(applySummary.appliedFiles).toBe(1);
     expect(applySummary.appliedSegments).toBeGreaterThan(0);
+    expect(applySummary.profile?.steps.map((step) => step.label)).toEqual(
+      expect.arrayContaining([
+        "discover done results",
+        "load and verify results",
+        "apply translations and archive tasks",
+        "write translations state",
+        "sync task manifest",
+      ]),
+    );
 
     const translationsBody = await readFile(
       join(repoDir, ".documirror", "content", "translations.jsonl"),
@@ -826,8 +844,18 @@ describe("documirror core pipeline", () => {
     const applySummary = await applyTranslations(repoDir);
     expect(applySummary.appliedFiles).toBe(1);
 
-    const buildSummary = await buildMirror(repoDir, silentLogger);
+    const buildSummary = await buildMirror(repoDir, silentLogger, {
+      profile: true,
+    });
     expect(buildSummary.pageCount).toBe(1);
+    expect(buildSummary.profile?.steps.map((step) => step.label)).toEqual(
+      expect.arrayContaining([
+        "load repository state",
+        "prepare build state",
+        "copy assets",
+        "build pages",
+      ]),
+    );
 
     const builtHtml = await readFile(
       join(repoDir, "site", "index.html"),
@@ -961,6 +989,176 @@ describe("documirror core pipeline", () => {
     expect(runtimeAsset).not.toContain(`__next_f`);
     expect(builtHtml).toContain(
       `\\"children\\":\\"Utilities for controlling background image position.\\"`,
+    );
+  });
+
+  it("attaches partial build profile details when build fails", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: createAiConfig(),
+      authToken: "secret-token",
+    });
+
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/missing.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const error = await buildMirror(repoDir, silentLogger, {
+      profile: true,
+    }).catch(
+      (buildError) =>
+        buildError as Error & {
+          profile?: {
+            steps: Array<{ label: string }>;
+          };
+        },
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.profile?.steps.map((step) => step.label)).toEqual(
+      expect.arrayContaining([
+        "load repository state",
+        "prepare build state",
+        "copy assets",
+        "build pages",
+      ]),
+    );
+  });
+
+  it("attaches partial apply profile details when apply fails late", async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+    createdDirs.push(repoDir);
+
+    await initMirrorRepository({
+      repoDir,
+      siteUrl: "https://docs.example.com",
+      targetLocale: "zh-CN",
+      ai: createAiConfig(),
+      authToken: "secret-token",
+    });
+
+    const snapshotPath = join(
+      repoDir,
+      ".documirror",
+      "cache",
+      "pages",
+      "index.html",
+    );
+    await writeFile(
+      snapshotPath,
+      `<!doctype html><html><head><title>Docs</title></head><body><p>Use the <code>snap-always</code> utility together</p></body></html>`,
+      "utf8",
+    );
+    await writeFile(
+      join(repoDir, ".documirror", "state", "manifest.json"),
+      JSON.stringify(
+        {
+          sourceUrl: "https://docs.example.com/",
+          targetLocale: "zh-CN",
+          generatedAt: new Date().toISOString(),
+          pages: {
+            "https://docs.example.com/": {
+              url: "https://docs.example.com/",
+              canonicalUrl: "https://docs.example.com/",
+              status: 200,
+              contentType: "text/html",
+              snapshotPath: ".documirror/cache/pages/index.html",
+              outputPath: "index.html",
+              pageHash: "hash",
+              discoveredFrom: null,
+              assetRefs: [],
+            },
+          },
+          assets: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await extractMirror(repoDir);
+    await planTranslations(repoDir);
+
+    mockTranslateTaskWithOpenAi.mockResolvedValueOnce({
+      rawText: JSON.stringify({
+        schemaVersion: 2,
+        taskId: "task_dc3d488a4e",
+        translations: [
+          {
+            id: "1",
+            translatedText: "一起使用 `snap-always` 工具",
+          },
+        ],
+      }),
+      draft: {
+        schemaVersion: 2,
+        taskId: "task_dc3d488a4e",
+        translations: [
+          {
+            id: "1",
+            translatedText: "一起使用 `snap-always` 工具",
+          },
+        ],
+      },
+    });
+
+    const runSummary = await runTranslations(repoDir, silentLogger);
+    expect(runSummary.successCount).toBe(1);
+
+    const queuePath = join(repoDir, ".documirror", "tasks", "QUEUE.md");
+    await rm(queuePath, { force: true });
+    await mkdir(queuePath);
+
+    const error = await applyTranslations(repoDir, silentLogger, {
+      profile: true,
+    }).catch(
+      (applyError) =>
+        applyError as Error & {
+          profile?: {
+            steps: Array<{ label: string }>;
+          };
+        },
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.profile?.steps.map((step) => step.label)).toEqual(
+      expect.arrayContaining([
+        "discover done results",
+        "load and verify results",
+        "apply translations and archive tasks",
+        "write translations state",
+        "sync task manifest",
+      ]),
     );
   });
 

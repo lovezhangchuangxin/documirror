@@ -7,6 +7,7 @@ export * from "./schemas/translation";
 export * from "./types";
 export * from "./utils/dom";
 export * from "./utils/hash";
+export * from "./utils/profile";
 export * from "./utils/text";
 export * from "./utils/time";
 export * from "./utils/url";

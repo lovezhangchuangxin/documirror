@@ -58,9 +58,9 @@ DocuMirror 适合需要这些能力的文档团队：
 5. `translate run`
    并发调用配置好的 OpenAI 兼容 API，自动校验模型输出，并把通过校验的结果写入 `tasks/done/`。如果运行看起来卡住，可以加 `--debug` 输出每个 task 的请求阶段日志
 6. `translate apply`
-   再次校验并把结果导入翻译存储
+   再次校验并把结果导入翻译存储。排查本地导入较慢时，可以加 `--profile` 输出阶段耗时。
 7. `build`
-   把翻译内容重新写回 HTML，最后在 `site/` 下输出镜像站。对于 hydration 之后仍会把英文重新插回正文的站点，还可以显式开启 `build.runtimeReconciler`，让构建产物额外注入一个运行时兜底层，在浏览器里于 DOM 更新后重新修正文本文本节点和白名单属性。
+   把翻译内容重新写回 HTML，最后在 `site/` 下输出镜像站。排查本地构建较慢时，可以加 `--profile` 输出构建阶段耗时。对于 hydration 之后仍会把英文重新插回正文的站点，还可以显式开启 `build.runtimeReconciler`，让构建产物额外注入一个运行时兜底层，在浏览器里于 DOM 更新后重新修正文本文本节点和白名单属性。
 
 增量更新时，运行 `update`，然后按需重复翻译、应用和构建。
 
@@ -204,10 +204,22 @@ node packages/cli/dist/index.mjs translate verify --repo ./my-mirror --task <tas
 node packages/cli/dist/index.mjs translate apply --repo ./my-mirror
 ```
 
+分析较慢的导入阶段：
+
+```bash
+node packages/cli/dist/index.mjs translate apply --repo ./my-mirror --profile
+```
+
 构建翻译镜像：
 
 ```bash
 node packages/cli/dist/index.mjs build --repo ./my-mirror
+```
+
+分析较慢的构建阶段：
+
+```bash
+node packages/cli/dist/index.mjs build --repo ./my-mirror --profile
 ```
 
 运行增量流水线：

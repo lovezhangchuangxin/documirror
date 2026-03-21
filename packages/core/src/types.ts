@@ -3,7 +3,11 @@ import type {
   CrawlProgress,
   CrawlStats,
 } from "@documirror/crawler";
-import type { Logger, TranslationVerificationIssue } from "@documirror/shared";
+import type {
+  CommandProfile,
+  Logger,
+  TranslationVerificationIssue,
+} from "@documirror/shared";
 import type { MirrorAiConfig } from "@documirror/shared";
 
 export type RepoPaths = {
@@ -58,9 +62,25 @@ export type PlanSummary = {
   segmentCount: number;
 };
 
+export type BuildMirrorOptions = {
+  profile?: boolean;
+};
+
+export type BuildSummary = {
+  pageCount: number;
+  assetCount: number;
+  missingTranslations: number;
+  profile?: CommandProfile;
+};
+
+export type ApplyTranslationsOptions = {
+  profile?: boolean;
+};
+
 export type ApplySummary = {
   appliedFiles: number;
   appliedSegments: number;
+  profile?: CommandProfile;
 };
 
 export type VerifySummary = {

@@ -20,8 +20,13 @@ import {
   planTranslations,
   saveMirrorAiConfig,
 } from "@documirror/core";
-import type { Logger, MirrorAiConfig, MirrorConfig } from "@documirror/shared";
-import { mirrorConfigSchema } from "@documirror/shared";
+import type {
+  CommandProfile,
+  Logger,
+  MirrorAiConfig,
+  MirrorConfig,
+} from "@documirror/shared";
+import { extractCommandProfile, mirrorConfigSchema } from "@documirror/shared";
 import { Command } from "commander";
 import ora from "ora";
 import pc from "picocolors";
@@ -318,21 +323,53 @@ translate
 translate
   .command("apply")
   .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option("--profile", "print stage timings")
   .action(async (options) => {
-    await runWithSpinner("Applying translation results", async ({ logger }) => {
-      const summary = await applyTranslations(options.repo, logger);
-      return `Applied ${summary.appliedSegments} segments from ${summary.appliedFiles} result files`;
-    });
+    await runWithSpinner(
+      "Applying translation results",
+      async ({ logger, persistInfo }) => {
+        try {
+          const summary = await applyTranslations(options.repo, logger, {
+            profile: options.profile === true,
+          });
+          return {
+            message: `Applied ${summary.appliedSegments} segments from ${summary.appliedFiles} result files`,
+            details: formatProfileDetails(summary.profile),
+          };
+        } catch (error) {
+          formatProfileDetails(extractCommandProfile(error)).forEach(
+            persistInfo,
+          );
+          throw error;
+        }
+      },
+    );
   });
 
 program
   .command("build")
   .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option("--profile", "print stage timings")
   .action(async (options) => {
-    await runWithSpinner("Building translated mirror", async ({ logger }) => {
-      const summary = await buildMirror(options.repo, logger);
-      return `Built ${summary.pageCount} pages and ${summary.assetCount} assets, missing ${summary.missingTranslations} translations`;
-    });
+    await runWithSpinner(
+      "Building translated mirror",
+      async ({ logger, persistInfo }) => {
+        try {
+          const summary = await buildMirror(options.repo, logger, {
+            profile: options.profile === true,
+          });
+          return {
+            message: `Built ${summary.pageCount} pages and ${summary.assetCount} assets, missing ${summary.missingTranslations} translations`,
+            details: formatProfileDetails(summary.profile),
+          };
+        } catch (error) {
+          formatProfileDetails(extractCommandProfile(error)).forEach(
+            persistInfo,
+          );
+          throw error;
+        }
+      },
+    );
   });
 
 program
@@ -708,6 +745,27 @@ function formatCrawlProgress(pageCount: number, assetCount: number): string {
 
 function formatCount(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function formatProfileDetails(profile: CommandProfile | undefined): string[] {
+  if (!profile) {
+    return [];
+  }
+
+  return [
+    ...profile.steps.map(
+      (step) => `profile: ${step.label} ${formatMilliseconds(step.durationMs)}`,
+    ),
+    `profile: total ${formatMilliseconds(profile.totalDurationMs)}`,
+  ];
+}
+
+function formatMilliseconds(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)}s`;
 }
 
 function installSignalHandlers(options: {

@@ -5,24 +5,19 @@ import type { CheerioAPI } from "cheerio";
 import { normalizeUrl } from "@documirror/shared";
 import type { Manifest, MirrorConfig } from "@documirror/shared";
 
+export type LinkRewriteIndex = {
+  pageMap: Map<string, string>;
+  assetMap: Map<string, string>;
+};
+
 export function rewriteLinks(
   $: CheerioAPI,
   manifest: Manifest,
   config: MirrorConfig,
   pageUrl: string,
+  linkRewriteIndex: LinkRewriteIndex = createLinkRewriteIndex(manifest, config),
 ): void {
-  const pageMap = new Map(
-    Object.values(manifest.pages).map((page) => [
-      page.url,
-      toPublicPath(page.outputPath, config.build.basePath),
-    ]),
-  );
-  const assetMap = new Map(
-    Object.values(manifest.assets).map((asset) => [
-      asset.url,
-      toPublicPath(asset.outputPath, config.build.basePath),
-    ]),
-  );
+  const { pageMap, assetMap } = linkRewriteIndex;
 
   $("[href], [src]").each((_, element) => {
     const href = $(element).attr("href");
@@ -54,6 +49,26 @@ export function rewriteLinks(
       $(element).attr("srcset", rewritten);
     }
   });
+}
+
+export function createLinkRewriteIndex(
+  manifest: Manifest,
+  config: MirrorConfig,
+): LinkRewriteIndex {
+  return {
+    pageMap: new Map(
+      Object.values(manifest.pages).map((page) => [
+        page.url,
+        toPublicPath(page.outputPath, config.build.basePath),
+      ]),
+    ),
+    assetMap: new Map(
+      Object.values(manifest.assets).map((asset) => [
+        asset.url,
+        toPublicPath(asset.outputPath, config.build.basePath),
+      ]),
+    ),
+  };
 }
 
 function rewriteUrl(

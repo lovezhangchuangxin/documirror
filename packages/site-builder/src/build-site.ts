@@ -1,11 +1,17 @@
+import { availableParallelism } from "node:os";
+
 import { load } from "cheerio";
 import fs from "fs-extra";
 import { dirname, join } from "pathe";
 
 import type { TranslationInlineGroupPlan } from "@documirror/shared";
+import {
+  attachCommandProfile,
+  createCommandProfileRecorder,
+} from "@documirror/shared";
 
-import { locateNode } from "./dom-path";
-import { rewriteLinks } from "./link-rewriter";
+import { createDomPathLocator } from "./dom-path";
+import { createLinkRewriteIndex, rewriteLinks } from "./link-rewriter";
 import {
   collectRuntimeReconcilerManifestForPage,
   createRuntimeReconcilerAssetSource,
@@ -29,189 +35,248 @@ export async function buildSite(
     logger,
   } = options;
   const siteDir = join(repoDir, "site");
-  await fs.emptyDir(siteDir);
+  const profiler = createCommandProfileRecorder(options.profile);
 
-  const segmentIndex = new Map(
-    segments.map((segment) => [segment.segmentId, segment]),
-  );
-  const translationIndex = new Map(
-    translations
-      .filter((translation) => translation.status === "accepted")
-      .map((translation) => [translation.segmentId, translation]),
-  );
-  const assemblyByPage = new Map(
-    assemblyMaps.map((assemblyMap) => [assemblyMap.pageUrl, assemblyMap]),
-  );
-
-  let missingTranslations = 0;
-  let generatedAssetCount = 0;
-  let runtimeAssetWritten = false;
-  const runtimeAssetSource = config.build.runtimeReconciler.enabled
-    ? createRuntimeReconcilerAssetSource()
-    : "";
-  const runtimeAssetPublicPath = createRuntimeReconcilerPublicAssetPath(
-    config.build.basePath,
-  );
-
-  for (const asset of Object.values(manifest.assets)) {
-    const sourcePath = join(repoDir, asset.cachePath);
-    const targetPath = join(siteDir, asset.outputPath);
-    await fs.ensureDir(dirname(targetPath));
-    await fs.copyFile(sourcePath, targetPath);
-  }
-
-  for (const page of Object.values(manifest.pages)) {
-    const sourcePath = join(repoDir, page.snapshotPath);
-    const html = await fs.readFile(sourcePath, "utf8");
-    const $ = load(html);
-    const assemblyMap = assemblyByPage.get(page.url);
-    const locatedBindings = new Map(
-      (assemblyMap?.bindings ?? []).map((binding) => [
-        binding.segmentId,
-        locateNode($, config, binding.domPath),
-      ]),
-    );
-    const inlineGroupPlans = collectInlineGroupPlansForPage(
-      page.url,
-      translations,
+  try {
+    const {
       segmentIndex,
-    );
-    const locatedInlineCodeNodes = new Map(
-      [...inlineGroupPlans.values()]
-        .flatMap((plan) =>
-          plan.parts
-            .filter((part) => part.kind === "code")
-            .map((part) => part.domPath),
-        )
-        .map((domPath) => [domPath, locateNode($, config, domPath)]),
-    );
-    const plannedInlineGroupSegmentIds = new Set(
-      [...inlineGroupPlans.values()].flatMap((plan) => plan.segmentIds),
-    );
-
-    if ($("html").length > 0) {
-      $("html").attr("lang", config.targetLocale);
-    }
-
-    if (assemblyMap) {
-      for (const inlineGroupPlan of inlineGroupPlans.values()) {
-        const readyToApply = inlineGroupPlan.segmentIds.every((segmentId) => {
-          const segment = segmentIndex.get(segmentId);
-          const translation = translationIndex.get(segmentId);
-          return (
-            segment &&
-            translation &&
-            translation.sourceHash === segment.sourceHash
-          );
-        });
-        if (!readyToApply) {
-          missingTranslations += inlineGroupPlan.segmentIds.length;
-          continue;
-        }
-
-        if (
-          !applyInlineGroupPlan(
-            $,
-            config,
-            inlineGroupPlan,
-            segmentIndex,
-            locatedBindings,
-            locatedInlineCodeNodes,
-          )
-        ) {
-          missingTranslations += inlineGroupPlan.segmentIds.length;
-          continue;
-        }
-      }
-
-      for (const binding of assemblyMap.bindings) {
-        if (plannedInlineGroupSegmentIds.has(binding.segmentId)) {
-          continue;
-        }
-
-        const segment = segmentIndex.get(binding.segmentId);
-        const translation = translationIndex.get(binding.segmentId);
-
-        if (
-          !segment ||
-          !translation ||
-          translation.sourceHash !== segment.sourceHash
-        ) {
-          missingTranslations += 1;
-          continue;
-        }
-
-        const node = locatedBindings.get(binding.segmentId) ?? null;
-        if (!node) {
-          missingTranslations += 1;
-          continue;
-        }
-
-        // Apply translations against the stored DOM path instead of re-querying selectors.
-        if (binding.kind === "text" && node.type === "text") {
-          node.data = translation.translatedText;
-          continue;
-        }
-
-        if (
-          (binding.kind === "attr" || binding.kind === "meta") &&
-          binding.attributeName
-        ) {
-          node.attribs = node.attribs ?? {};
-          node.attribs[binding.attributeName] = translation.translatedText;
-        }
-      }
-    }
-
-    rewriteLinks($, manifest, config, page.url);
-    const runtimeManifestResult = collectRuntimeReconcilerManifestForPage({
-      pageUrl: page.url,
-      config,
-      segments,
       translationIndex,
+      assemblyByPage,
+      segmentsByPage,
+      inlineGroupPlansByPage,
+      linkRewriteIndex,
+    } = await profiler.measure("prepare build state", async () => {
+      await fs.emptyDir(siteDir);
+      const segmentIndex = new Map(
+        segments.map((segment) => [segment.segmentId, segment]),
+      );
+
+      return {
+        segmentIndex,
+        translationIndex: new Map(
+          translations
+            .filter((translation) => translation.status === "accepted")
+            .map((translation) => [translation.segmentId, translation]),
+        ),
+        assemblyByPage: new Map(
+          assemblyMaps.map((assemblyMap) => [assemblyMap.pageUrl, assemblyMap]),
+        ),
+        segmentsByPage: indexSegmentsByPage(segments),
+        inlineGroupPlansByPage: indexInlineGroupPlansByPage(
+          translations,
+          segmentIndex,
+        ),
+        linkRewriteIndex: createLinkRewriteIndex(manifest, config),
+      };
     });
-    if (hasRuntimeReconcilerEntries(runtimeManifestResult.manifest)) {
-      if (!runtimeAssetWritten) {
+
+    let runtimeAssetWritePromise: Promise<void> | null = null;
+    const runtimeAssetSource = config.build.runtimeReconciler.enabled
+      ? createRuntimeReconcilerAssetSource()
+      : "";
+    const runtimeAssetPublicPath = createRuntimeReconcilerPublicAssetPath(
+      config.build.basePath,
+    );
+    const buildConcurrency = resolveBuildConcurrency();
+
+    await profiler.measure("copy assets", async () => {
+      await mapWithConcurrency(
+        Object.values(manifest.assets),
+        buildConcurrency,
+        async (asset) => {
+          const sourcePath = join(repoDir, asset.cachePath);
+          const targetPath = join(siteDir, asset.outputPath);
+          await fs.ensureDir(dirname(targetPath));
+          await fs.copyFile(sourcePath, targetPath);
+        },
+      );
+    });
+
+    const ensureRuntimeAssetWritten = async (): Promise<void> => {
+      if (!config.build.runtimeReconciler.enabled) {
+        return;
+      }
+
+      runtimeAssetWritePromise ??= (async () => {
         const runtimeAssetTargetPath = join(
           siteDir,
           RUNTIME_RECONCILER_ASSET_OUTPUT_PATH,
         );
         await fs.ensureDir(dirname(runtimeAssetTargetPath));
         await fs.writeFile(runtimeAssetTargetPath, runtimeAssetSource, "utf8");
-        runtimeAssetWritten = true;
-        generatedAssetCount += 1;
-      }
+      })();
 
-      injectRuntimeReconcilerArtifacts(
-        $,
-        runtimeManifestResult.manifest,
-        runtimeAssetPublicPath,
-      );
-    }
+      await runtimeAssetWritePromise;
+    };
 
-    const targetPath = join(siteDir, page.outputPath);
-    await fs.ensureDir(dirname(targetPath));
-    await fs.writeFile(targetPath, $.html(), "utf8");
-    logger.info(`Built ${page.outputPath}`);
+    const pageResults = await profiler.measure("build pages", async () =>
+      mapWithConcurrency(
+        Object.values(manifest.pages),
+        buildConcurrency,
+        async (page) => {
+          const sourcePath = join(repoDir, page.snapshotPath);
+          const html = await fs.readFile(sourcePath, "utf8");
+          const $ = load(html);
+          const locateNodeByDomPath = createDomPathLocator($, config);
+          const assemblyMap = assemblyByPage.get(page.url);
+          const locatedBindings = new Map(
+            (assemblyMap?.bindings ?? []).map((binding) => [
+              binding.segmentId,
+              locateNodeByDomPath(binding.domPath),
+            ]),
+          );
+          const inlineGroupPlans =
+            inlineGroupPlansByPage.get(page.url) ??
+            new Map<string, TranslationInlineGroupPlan>();
+          const locatedInlineCodeNodes = new Map(
+            [...inlineGroupPlans.values()]
+              .flatMap((plan) =>
+                plan.parts
+                  .filter((part) => part.kind === "code")
+                  .map((part) => part.domPath),
+              )
+              .map((domPath) => [domPath, locateNodeByDomPath(domPath)]),
+          );
+          const plannedInlineGroupSegmentIds = new Set(
+            [...inlineGroupPlans.values()].flatMap((plan) => plan.segmentIds),
+          );
+          let missingTranslations = 0;
+
+          if ($("html").length > 0) {
+            $("html").attr("lang", config.targetLocale);
+          }
+
+          if (assemblyMap) {
+            for (const inlineGroupPlan of inlineGroupPlans.values()) {
+              const readyToApply = inlineGroupPlan.segmentIds.every(
+                (segmentId) => {
+                  const segment = segmentIndex.get(segmentId);
+                  const translation = translationIndex.get(segmentId);
+                  return (
+                    segment &&
+                    translation &&
+                    translation.sourceHash === segment.sourceHash
+                  );
+                },
+              );
+              if (!readyToApply) {
+                missingTranslations += inlineGroupPlan.segmentIds.length;
+                continue;
+              }
+
+              if (
+                !applyInlineGroupPlan(
+                  inlineGroupPlan,
+                  segmentIndex,
+                  locatedBindings,
+                  locatedInlineCodeNodes,
+                  locateNodeByDomPath,
+                )
+              ) {
+                missingTranslations += inlineGroupPlan.segmentIds.length;
+                continue;
+              }
+            }
+
+            for (const binding of assemblyMap.bindings) {
+              if (plannedInlineGroupSegmentIds.has(binding.segmentId)) {
+                continue;
+              }
+
+              const segment = segmentIndex.get(binding.segmentId);
+              const translation = translationIndex.get(binding.segmentId);
+
+              if (
+                !segment ||
+                !translation ||
+                translation.sourceHash !== segment.sourceHash
+              ) {
+                missingTranslations += 1;
+                continue;
+              }
+
+              const node = locatedBindings.get(binding.segmentId) ?? null;
+              if (!node) {
+                missingTranslations += 1;
+                continue;
+              }
+
+              // Apply translations against the stored DOM path instead of re-querying selectors.
+              if (binding.kind === "text" && node.type === "text") {
+                node.data = translation.translatedText;
+                continue;
+              }
+
+              if (
+                (binding.kind === "attr" || binding.kind === "meta") &&
+                binding.attributeName
+              ) {
+                node.attribs = node.attribs ?? {};
+                node.attribs[binding.attributeName] =
+                  translation.translatedText;
+              }
+            }
+          }
+
+          rewriteLinks($, manifest, config, page.url, linkRewriteIndex);
+          const runtimeManifestResult = collectRuntimeReconcilerManifestForPage(
+            {
+              pageUrl: page.url,
+              config,
+              segments: segmentsByPage.get(page.url) ?? [],
+              translationIndex,
+            },
+          );
+          if (hasRuntimeReconcilerEntries(runtimeManifestResult.manifest)) {
+            await ensureRuntimeAssetWritten();
+            injectRuntimeReconcilerArtifacts(
+              $,
+              runtimeManifestResult.manifest,
+              runtimeAssetPublicPath,
+            );
+          }
+
+          const targetPath = join(siteDir, page.outputPath);
+          await fs.ensureDir(dirname(targetPath));
+          await fs.writeFile(targetPath, $.html(), "utf8");
+          logger.info(`Built ${page.outputPath}`);
+
+          return {
+            missingTranslations,
+          };
+        },
+      ),
+    );
+
+    const missingTranslations = pageResults.reduce(
+      (total, result) => total + result.missingTranslations,
+      0,
+    );
+    const generatedAssetCount = runtimeAssetWritePromise ? 1 : 0;
+
+    return {
+      pageCount: Object.keys(manifest.pages).length,
+      assetCount: Object.keys(manifest.assets).length + generatedAssetCount,
+      missingTranslations,
+      profile: profiler.finish(),
+    };
+  } catch (error) {
+    throw attachCommandProfile(error, profiler.finish());
   }
-
-  return {
-    pageCount: Object.keys(manifest.pages).length,
-    assetCount: Object.keys(manifest.assets).length + generatedAssetCount,
-    missingTranslations,
-  };
 }
 
-function collectInlineGroupPlansForPage(
-  pageUrl: string,
+function indexInlineGroupPlansByPage(
   translations: BuildSiteOptions["translations"],
   segmentIndex: Map<string, BuildSiteOptions["segments"][number]>,
-): Map<string, TranslationInlineGroupPlan> {
-  const inlineGroupPlans = new Map<string, TranslationInlineGroupPlan>();
+) {
+  const inlineGroupPlansByPage = new Map<
+    string,
+    Map<string, TranslationInlineGroupPlan>
+  >();
 
   translations.forEach((translation) => {
     const inlineGroupPlan = translation.inlineGroupPlan;
-    if (!inlineGroupPlan || inlineGroupPlans.has(inlineGroupPlan.groupId)) {
+    if (!inlineGroupPlan) {
       return;
     }
 
@@ -219,23 +284,42 @@ function collectInlineGroupPlansForPage(
     const firstSegment = firstSegmentId
       ? segmentIndex.get(firstSegmentId)
       : undefined;
-    if (!firstSegment || firstSegment.pageUrl !== pageUrl) {
+    if (!firstSegment) {
       return;
     }
 
-    inlineGroupPlans.set(inlineGroupPlan.groupId, inlineGroupPlan);
+    const pagePlans =
+      inlineGroupPlansByPage.get(firstSegment.pageUrl) ?? new Map();
+    if (!pagePlans.has(inlineGroupPlan.groupId)) {
+      pagePlans.set(inlineGroupPlan.groupId, inlineGroupPlan);
+    }
+    inlineGroupPlansByPage.set(firstSegment.pageUrl, pagePlans);
   });
 
-  return inlineGroupPlans;
+  return inlineGroupPlansByPage;
+}
+
+function indexSegmentsByPage(segments: BuildSiteOptions["segments"]) {
+  const segmentsByPage = new Map<
+    string,
+    BuildSiteOptions["segments"][number][]
+  >();
+
+  segments.forEach((segment) => {
+    const pageSegments = segmentsByPage.get(segment.pageUrl) ?? [];
+    pageSegments.push(segment);
+    segmentsByPage.set(segment.pageUrl, pageSegments);
+  });
+
+  return segmentsByPage;
 }
 
 function applyInlineGroupPlan(
-  $: ReturnType<typeof load>,
-  config: BuildSiteOptions["config"],
   inlineGroupPlan: TranslationInlineGroupPlan,
   segmentIndex: Map<string, BuildSiteOptions["segments"][number]>,
   locatedBindings: Map<string, LooseNode | null>,
   locatedInlineCodeNodes: Map<string, LooseNode | null>,
+  locateNodeByDomPath: (domPath: string) => LooseNode | null,
 ): boolean {
   const segmentNodes = inlineGroupPlan.segmentIds
     .map((segmentId) => {
@@ -245,7 +329,7 @@ function applyInlineGroupPlan(
       }
 
       return (
-        locatedBindings.get(segmentId) ?? locateNode($, config, segment.domPath)
+        locatedBindings.get(segmentId) ?? locateNodeByDomPath(segment.domPath)
       );
     })
     .filter(Boolean) as LooseNode[];
@@ -335,4 +419,59 @@ function replaceChildRange(
   });
 
   parent.children = nextChildren;
+}
+
+function resolveBuildConcurrency(): number {
+  return Math.min(Math.max(2, Math.floor(getAvailableParallelism() / 2)), 6);
+}
+
+function getAvailableParallelism(): number {
+  try {
+    return availableParallelism();
+  } catch {
+    return 4;
+  }
+}
+
+async function mapWithConcurrency<T, TResult>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<TResult>,
+): Promise<TResult[]> {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const results = new Array<TResult>(items.length);
+  let nextIndex = 0;
+  let firstError: unknown;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        if (firstError) {
+          return;
+        }
+
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        try {
+          results[currentIndex] = await worker(
+            items[currentIndex],
+            currentIndex,
+          );
+        } catch (error) {
+          firstError ??= error;
+          return;
+        }
+      }
+    }),
+  );
+
+  if (firstError) {
+    throw firstError;
+  }
+
+  return results;
 }

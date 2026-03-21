@@ -58,9 +58,9 @@ The end-to-end workflow is:
 5. `translate run`
    Call the configured OpenAI-compatible API concurrently, validate the model output, and write verified results into `tasks/done/`. Use `--debug` to print per-task request lifecycle logs when a run appears stuck.
 6. `translate apply`
-   Re-validate and import accepted translation results into the translation store.
+   Re-validate and import accepted translation results into the translation store. Add `--profile` to print stage timings while diagnosing slow local imports.
 7. `build`
-   Reinsert translated content into HTML and emit a translated static mirror under `site/`. For sites whose client-side hydration reintroduces source-language text, you can opt into `build.runtimeReconciler`, which injects a runtime fallback that re-applies accepted body text and whitelisted attribute translations in the browser after DOM updates.
+   Reinsert translated content into HTML and emit a translated static mirror under `site/`. Add `--profile` to print build-stage timings while diagnosing slow local builds. For sites whose client-side hydration reintroduces source-language text, you can opt into `build.runtimeReconciler`, which injects a runtime fallback that re-applies accepted body text and whitelisted attribute translations in the browser after DOM updates.
 
 For incremental updates, run `update`, then repeat translation, apply, and build as needed.
 
@@ -213,10 +213,22 @@ Apply translated results:
 node packages/cli/dist/index.mjs translate apply --repo ./my-mirror
 ```
 
+Profile a slow apply step:
+
+```bash
+node packages/cli/dist/index.mjs translate apply --repo ./my-mirror --profile
+```
+
 Build the translated mirror:
 
 ```bash
 node packages/cli/dist/index.mjs build --repo ./my-mirror
+```
+
+Profile a slow build:
+
+```bash
+node packages/cli/dist/index.mjs build --repo ./my-mirror --profile
 ```
 
 Run the incremental pipeline:

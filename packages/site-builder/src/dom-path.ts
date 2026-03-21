@@ -10,7 +10,32 @@ export function locateNode(
   config: MirrorConfig,
   domPath: string,
 ): LooseNode | null {
-  const roots = getAssemblyRoots($, config);
+  return createDomPathLocator($, config)(domPath);
+}
+
+export function createDomPathLocator(
+  $: CheerioAPI,
+  config: MirrorConfig,
+): (domPath: string) => LooseNode | null {
+  const roots = getAssemblyRoots($, config) as LooseNode[];
+
+  return (domPath: string) => locateNodeFromRoots(roots, domPath);
+}
+
+function getAssemblyRoots($: CheerioAPI, config: MirrorConfig): unknown[] {
+  if (config.selectors.include.length > 0) {
+    return collapseNestedDomRoots(
+      config.selectors.include.flatMap((selector) => $(selector).toArray()),
+    );
+  }
+
+  return [$("body").get(0) ?? $.root().get(0)].filter(Boolean);
+}
+
+function locateNodeFromRoots(
+  roots: LooseNode[],
+  domPath: string,
+): LooseNode | null {
   const parts = domPath.split("/");
   const rootPart = parts.shift();
   if (!rootPart) {
@@ -22,7 +47,7 @@ export function locateNode(
     return null;
   }
 
-  let current = roots[Number(rootMatch[1])] as LooseNode | undefined;
+  let current = roots[Number(rootMatch[1])];
   for (const part of parts) {
     const match = part.match(/^[^[]+\[(\d+)\]$/);
     if (!match || !current?.children) {
@@ -33,14 +58,4 @@ export function locateNode(
   }
 
   return current ?? null;
-}
-
-function getAssemblyRoots($: CheerioAPI, config: MirrorConfig): unknown[] {
-  if (config.selectors.include.length > 0) {
-    return collapseNestedDomRoots(
-      config.selectors.include.flatMap((selector) => $(selector).toArray()),
-    );
-  }
-
-  return [$("body").get(0) ?? $.root().get(0)].filter(Boolean);
 }

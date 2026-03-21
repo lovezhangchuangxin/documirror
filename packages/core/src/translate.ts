@@ -1,7 +1,9 @@
+import { availableParallelism } from "node:os";
+
 import fg from "fast-glob";
 import fs from "fs-extra";
 import pLimit from "p-limit";
-import { basename, join, relative } from "pathe";
+import { basename, dirname, join, relative } from "pathe";
 import { ZodError } from "zod";
 
 import { translateTaskWithOpenAi } from "@documirror/adapters-openai";
@@ -37,6 +39,8 @@ import type {
   TranslationVerificationReport,
 } from "@documirror/shared";
 import {
+  attachCommandProfile,
+  createCommandProfileRecorder,
   createTimestamp,
   defaultLogger,
   extractPlaceholderTokens,
@@ -67,6 +71,7 @@ import {
   writeJsonl,
 } from "./storage";
 import type {
+  ApplyTranslationsOptions,
   ApplySummary,
   PlanSummary,
   RunSummary,
@@ -135,6 +140,12 @@ type InlineGroupPlanBuildResult =
 type RunTaskViewResult = {
   draft: TranslationDraftResultFile;
   verification: CandidateVerification;
+};
+
+type PreparedApplyTaskBundle = {
+  filePath: string;
+  result: TranslationResultFile;
+  mapping: TranslationTaskMappingFile;
 };
 
 export async function planTranslations(
@@ -433,106 +444,183 @@ export async function verifyTranslationTask(
 export async function applyTranslations(
   repoDir: string,
   logger: Logger = defaultLogger,
+  options: ApplyTranslationsOptions = {},
 ): Promise<ApplySummary> {
+  const profiler = createCommandProfileRecorder(options.profile);
   const paths = getRepoPaths(repoDir);
-  const config = await loadConfig(paths);
-  const segments = await loadSegments(paths);
-  const segmentIndex = new Map(
-    segments.map((segment) => [segment.segmentId, segment]),
-  );
-  const translations = await loadTranslations(paths);
-  const translationIndex = new Map(
-    translations.map((translation) => [translation.segmentId, translation]),
-  );
-  const files = await fg("*.json", { cwd: paths.tasksDoneDir, absolute: true });
+  let loadAndVerifyDurationMs = 0;
+  let applyAndArchiveDurationMs = 0;
+  let processDurationsRecorded = false;
 
-  let appliedFiles = 0;
-  let appliedSegments = 0;
-
-  for (const filePath of files.sort()) {
-    let parsed: TranslationResultFile;
-    try {
-      parsed = parseResultFile(await readJson(filePath, {}));
-    } catch (error) {
-      logger.warn(
-        `Skipping unreadable result file ${filePath}: ${String(error)}`,
-      );
-      continue;
+  const recordProcessDurations = () => {
+    if (processDurationsRecorded) {
+      return;
     }
 
-    const taskPath = getPendingTaskPath(paths, parsed.taskId);
-    if (!(await fs.pathExists(taskPath))) {
-      logger.warn(
-        `Skipping result import for ${parsed.taskId} because its pending task file is missing`,
-      );
-      continue;
-    }
+    profiler.record("load and verify results", loadAndVerifyDurationMs);
+    profiler.record(
+      "apply translations and archive tasks",
+      applyAndArchiveDurationMs,
+    );
+    processDurationsRecorded = true;
+  };
 
-    const task = parseTaskFile(await readJson(taskPath, {}));
-    const mapping = await loadTaskMapping(paths.taskMappingsDir, parsed.taskId);
-    if (!mapping) {
-      logger.warn(
-        `Skipping result import for ${parsed.taskId} because its task mapping is missing or unreadable`,
-      );
-      continue;
-    }
+  try {
+    const config = await loadConfig(paths);
+    const segments = await loadSegments(paths);
+    const segmentIndex = new Map(
+      segments.map((segment) => [segment.segmentId, segment]),
+    );
+    const translations = await loadTranslations(paths);
+    const translationIndex = new Map(
+      translations.map((translation) => [translation.segmentId, translation]),
+    );
+    const files = await profiler.measure("discover done results", async () =>
+      (await fg("*.json", { cwd: paths.tasksDoneDir, absolute: true })).sort(),
+    );
 
-    const issues = [
-      ...validateTaskStructure(task),
-      ...validateTaskFreshness(task, mapping, segmentIndex),
-      ...validateTranslationsAgainstTask(task, mapping, parsed),
-    ];
-    if (issues.length > 0) {
-      logger.warn(
-        `Skipping result import for ${parsed.taskId} because verification failed`,
-      );
-      issues.forEach((issue) => {
-        logger.warn(`[${issue.code}] ${issue.jsonPath}: ${issue.message}`);
-      });
-      continue;
-    }
+    let appliedFiles = 0;
+    let appliedSegments = 0;
+    const batchSize = resolveFileIoConcurrency();
 
-    const mappingIndex = new Map(mapping.items.map((item) => [item.id, item]));
-    for (const item of parsed.translations) {
-      const mappedItem = mappingIndex.get(item.id);
-      if (!mappedItem) {
-        logger.warn(
-          `Skipping unknown translation id ${item.id} in ${filePath}`,
+    for (let index = 0; index < files.length; index += batchSize) {
+      const batchFiles = files.slice(index, index + batchSize);
+      let preparedBundles: Array<PreparedApplyTaskBundle | null> = [];
+      const loadStartedAt = Date.now();
+      try {
+        preparedBundles = await Promise.all(
+          batchFiles.map((filePath) =>
+            prepareApplyTaskBundle({
+              filePath,
+              paths,
+              segmentIndex,
+              logger,
+            }),
+          ),
         );
-        continue;
+      } finally {
+        loadAndVerifyDurationMs += Date.now() - loadStartedAt;
       }
 
-      const appliedCount = applyMappedTranslation({
-        mappedItem,
-        translatedText: item.translatedText,
-        targetLocale: config.targetLocale,
-        provider: `${parsed.provider}/${parsed.model}`,
-        completedAt: parsed.completedAt,
-        filePath,
-        segmentIndex,
-        translationIndex,
-        logger,
-      });
-      appliedSegments += appliedCount;
+      const applyStartedAt = Date.now();
+      try {
+        for (const preparedBundle of preparedBundles) {
+          if (!preparedBundle) {
+            continue;
+          }
+
+          const { filePath, result, mapping } = preparedBundle;
+          const mappingIndex = new Map(
+            mapping.items.map((item) => [item.id, item]),
+          );
+          for (const item of result.translations) {
+            const mappedItem = mappingIndex.get(item.id);
+            if (!mappedItem) {
+              logger.warn(
+                `Skipping unknown translation id ${item.id} in ${filePath}`,
+              );
+              continue;
+            }
+
+            const appliedCount = applyMappedTranslation({
+              mappedItem,
+              translatedText: item.translatedText,
+              targetLocale: config.targetLocale,
+              provider: `${result.provider}/${result.model}`,
+              completedAt: result.completedAt,
+              filePath,
+              segmentIndex,
+              translationIndex,
+              logger,
+            });
+            appliedSegments += appliedCount;
+          }
+
+          const archiveStamp = createArchiveStamp(result.completedAt);
+          await Promise.all([
+            archivePendingTaskFile(paths, result.taskId, archiveStamp),
+            archiveTaskMapping(result.taskId, paths, archiveStamp),
+            archiveDoneResultFile(paths, result.taskId, filePath, archiveStamp),
+          ]);
+          appliedFiles += 1;
+        }
+      } finally {
+        applyAndArchiveDurationMs += Date.now() - applyStartedAt;
+      }
     }
 
-    const archiveStamp = createArchiveStamp(parsed.completedAt);
-    await archivePendingTaskFile(paths, parsed.taskId, archiveStamp);
-    await archiveTaskMapping(parsed.taskId, paths, archiveStamp);
-    await archiveDoneResultFile(paths, parsed.taskId, filePath, archiveStamp);
-    appliedFiles += 1;
+    recordProcessDurations();
+
+    await profiler.measure("write translations state", async () =>
+      writeJsonl(paths.translationsPath, [...translationIndex.values()]),
+    );
+    await profiler.measure("sync task manifest", async () =>
+      syncTaskManifest(repoDir, config.sourceUrl, config.targetLocale, logger),
+    );
+    return {
+      appliedFiles,
+      appliedSegments,
+      profile: profiler.finish(),
+    };
+  } catch (error) {
+    recordProcessDurations();
+    throw attachCommandProfile(error, profiler.finish());
+  }
+}
+
+async function prepareApplyTaskBundle(options: {
+  filePath: string;
+  paths: ReturnType<typeof getRepoPaths>;
+  segmentIndex: Map<string, SegmentRecord>;
+  logger: Logger;
+}): Promise<PreparedApplyTaskBundle | null> {
+  const { filePath, paths, segmentIndex, logger } = options;
+  let result: TranslationResultFile;
+  try {
+    result = parseResultFile(await readJson(filePath, {}));
+  } catch (error) {
+    logger.warn(
+      `Skipping unreadable result file ${filePath}: ${String(error)}`,
+    );
+    return null;
   }
 
-  await writeJsonl(paths.translationsPath, [...translationIndex.values()]);
-  await syncTaskManifest(
-    repoDir,
-    config.sourceUrl,
-    config.targetLocale,
-    logger,
-  );
+  const taskPath = getPendingTaskPath(paths, result.taskId);
+  if (!(await fs.pathExists(taskPath))) {
+    logger.warn(
+      `Skipping result import for ${result.taskId} because its pending task file is missing`,
+    );
+    return null;
+  }
+
+  const task = parseTaskFile(await readJson(taskPath, {}));
+  const mapping = await loadTaskMapping(paths.taskMappingsDir, result.taskId);
+  if (!mapping) {
+    logger.warn(
+      `Skipping result import for ${result.taskId} because its task mapping is missing or unreadable`,
+    );
+    return null;
+  }
+
+  const issues = [
+    ...validateTaskStructure(task),
+    ...validateTaskFreshness(task, mapping, segmentIndex),
+    ...validateTranslationsAgainstTask(task, mapping, result),
+  ];
+  if (issues.length > 0) {
+    logger.warn(
+      `Skipping result import for ${result.taskId} because verification failed`,
+    );
+    issues.forEach((issue) => {
+      logger.warn(`[${issue.code}] ${issue.jsonPath}: ${issue.message}`);
+    });
+    return null;
+  }
+
   return {
-    appliedFiles,
-    appliedSegments,
+    filePath,
+    result,
+    mapping,
   };
 }
 
@@ -1074,80 +1162,122 @@ async function syncTaskManifest(
     targetLocale,
     logger,
   );
+  const previousEntryByTaskId = new Map(
+    previousManifest.tasks.map((task) => [task.taskId, task]),
+  );
   const entriesById = new Map<string, TranslationTaskManifestEntry>();
+  const loadLimit = pLimit(resolveFileIoConcurrency());
 
-  const pendingTaskFiles = await fg("*.json", {
-    cwd: paths.tasksPendingDir,
-    absolute: true,
-  });
-  for (const taskFilePath of pendingTaskFiles.sort()) {
-    try {
-      const entry = await buildPendingTaskManifestEntry(
-        repoDir,
-        paths,
-        taskFilePath,
-        logger,
-      );
-      entriesById.set(entry.taskId, entry);
-    } catch (error) {
-      const taskId = getTaskIdFromPath(taskFilePath);
-      if (taskId) {
-        entriesById.set(
-          taskId,
-          buildInvalidManifestEntry({
-            repoDir,
-            taskId,
-            taskFile: toRepoRelativePath(repoDir, taskFilePath),
-            previousEntry: previousManifest.tasks.find(
-              (task) => task.taskId === taskId,
+  const pendingTaskFiles = (
+    await fg("*.json", {
+      cwd: paths.tasksPendingDir,
+      absolute: true,
+    })
+  ).sort();
+  const pendingEntries = await Promise.all(
+    pendingTaskFiles.map((taskFilePath) =>
+      loadLimit(async () => {
+        try {
+          return {
+            ok: true as const,
+            entry: await buildPendingTaskManifestEntry(
+              repoDir,
+              paths,
+              taskFilePath,
+              logger,
             ),
-          }),
-        );
-      }
-      logger.warn(
-        `Skipping unreadable task manifest entry ${taskFilePath}: ${String(error)}`,
+          };
+        } catch (error) {
+          const taskId = getTaskIdFromPath(taskFilePath);
+          return {
+            ok: false as const,
+            error,
+            taskFilePath,
+            taskId,
+          };
+        }
+      }),
+    ),
+  );
+  for (const result of pendingEntries) {
+    if (result.ok) {
+      entriesById.set(result.entry.taskId, result.entry);
+      continue;
+    }
+
+    if (result.taskId) {
+      entriesById.set(
+        result.taskId,
+        buildInvalidManifestEntry({
+          repoDir,
+          taskId: result.taskId,
+          taskFile: toRepoRelativePath(repoDir, result.taskFilePath),
+          previousEntry: previousEntryByTaskId.get(result.taskId),
+        }),
       );
     }
+    logger.warn(
+      `Skipping unreadable task manifest entry ${result.taskFilePath}: ${String(result.error)}`,
+    );
   }
 
-  const appliedTaskFiles = await fg("*.task.json", {
-    cwd: paths.tasksAppliedDir,
-    absolute: true,
-  });
-  for (const taskFilePath of appliedTaskFiles.sort()) {
-    try {
-      const entry = await buildAppliedTaskManifestEntry(
-        repoDir,
-        paths,
-        taskFilePath,
-        logger,
-      );
-      if (!entriesById.has(entry.taskId)) {
-        entriesById.set(entry.taskId, entry);
-      }
-    } catch (error) {
-      const taskId = basename(taskFilePath, ".task.json");
-      if (taskId && !entriesById.has(taskId)) {
-        entriesById.set(
-          taskId,
-          buildInvalidManifestEntry({
-            repoDir,
-            taskId,
-            taskFile: toRepoRelativePath(repoDir, taskFilePath),
-            doneResultFile: toRepoRelativePath(
+  const appliedTaskFiles = (
+    await fg("*.task.json", {
+      cwd: paths.tasksAppliedDir,
+      absolute: true,
+    })
+  ).sort();
+  const appliedEntries = await Promise.all(
+    appliedTaskFiles.map((taskFilePath) =>
+      loadLimit(async () => {
+        try {
+          return {
+            ok: true as const,
+            entry: await buildAppliedTaskManifestEntry(
               repoDir,
-              getAppliedResultPath(paths.tasksAppliedDir, taskId),
+              paths,
+              taskFilePath,
+              logger,
             ),
-            previousEntry: previousManifest.tasks.find(
-              (task) => task.taskId === taskId,
-            ),
-          }),
-        );
+          };
+        } catch (error) {
+          const taskId = basename(taskFilePath, ".task.json");
+          return {
+            ok: false as const,
+            error,
+            taskFilePath,
+            taskId,
+          };
+        }
+      }),
+    ),
+  );
+  for (const result of appliedEntries) {
+    if (result.ok) {
+      if (!entriesById.has(result.entry.taskId)) {
+        entriesById.set(result.entry.taskId, result.entry);
       }
-      logger.warn(
-        `Skipping unreadable applied task manifest entry ${taskFilePath}: ${String(error)}`,
+      continue;
+    }
+
+    if (result.taskId && !entriesById.has(result.taskId)) {
+      entriesById.set(
+        result.taskId,
+        buildInvalidManifestEntry({
+          repoDir,
+          taskId: result.taskId,
+          taskFile: toRepoRelativePath(repoDir, result.taskFilePath),
+          doneResultFile: toRepoRelativePath(
+            repoDir,
+            getAppliedResultPath(paths.tasksAppliedDir, result.taskId),
+          ),
+          previousEntry: previousEntryByTaskId.get(result.taskId),
+        }),
       );
     }
+    logger.warn(
+      `Skipping unreadable applied task manifest entry ${result.taskFilePath}: ${String(result.error)}`,
+    );
   }
 
   for (const taskId of invalidatedTaskIds) {
@@ -1155,9 +1285,7 @@ async function syncTaskManifest(
       continue;
     }
 
-    const previousEntry = previousManifest.tasks.find(
-      (task) => task.taskId === taskId,
-    );
+    const previousEntry = previousEntryByTaskId.get(taskId);
     entriesById.set(
       taskId,
       buildInvalidManifestEntry({
@@ -2477,22 +2605,20 @@ async function archivePendingTaskFile(
     return;
   }
 
-  await fs.copy(
-    pendingTaskPath,
-    getAppliedTaskPath(paths.tasksAppliedDir, taskId),
-    {
-      overwrite: true,
-    },
+  const appliedTaskPath = getAppliedTaskPath(paths.tasksAppliedDir, taskId);
+  const appliedTaskHistoryPath = getAppliedTaskHistoryPath(
+    paths.tasksAppliedHistoryDir,
+    taskId,
+    archiveStamp,
   );
-  await fs.copy(
-    pendingTaskPath,
-    getAppliedTaskHistoryPath(
-      paths.tasksAppliedHistoryDir,
-      taskId,
-      archiveStamp,
-    ),
-  );
-  await fs.remove(pendingTaskPath);
+  await fs.ensureDir(dirname(appliedTaskPath));
+  await fs.ensureDir(dirname(appliedTaskHistoryPath));
+  await fs.move(pendingTaskPath, appliedTaskPath, {
+    overwrite: true,
+  });
+  await fs.copy(appliedTaskPath, appliedTaskHistoryPath, {
+    overwrite: true,
+  });
 }
 
 async function archiveTaskMapping(
@@ -2505,22 +2631,23 @@ async function archiveTaskMapping(
     return;
   }
 
-  await fs.copy(
-    mappingPath,
-    getAppliedTaskMappingPath(paths.tasksAppliedDir, taskId),
-    {
-      overwrite: true,
-    },
+  const appliedMappingPath = getAppliedTaskMappingPath(
+    paths.tasksAppliedDir,
+    taskId,
   );
-  await fs.copy(
-    mappingPath,
-    getAppliedTaskMappingHistoryPath(
-      paths.tasksAppliedHistoryDir,
-      taskId,
-      archiveStamp,
-    ),
+  const appliedTaskMappingHistoryPath = getAppliedTaskMappingHistoryPath(
+    paths.tasksAppliedHistoryDir,
+    taskId,
+    archiveStamp,
   );
-  await fs.remove(mappingPath);
+  await fs.ensureDir(dirname(appliedMappingPath));
+  await fs.ensureDir(dirname(appliedTaskMappingHistoryPath));
+  await fs.move(mappingPath, appliedMappingPath, {
+    overwrite: true,
+  });
+  await fs.copy(appliedMappingPath, appliedTaskMappingHistoryPath, {
+    overwrite: true,
+  });
 }
 
 function isSerializedEqual(left: unknown, right: unknown): boolean {
@@ -2549,22 +2676,20 @@ async function archiveDoneResultFile(
     return;
   }
 
-  await fs.copy(
-    resultPath,
-    getAppliedResultPath(paths.tasksAppliedDir, taskId),
-    {
-      overwrite: true,
-    },
+  const appliedResultPath = getAppliedResultPath(paths.tasksAppliedDir, taskId);
+  const appliedResultHistoryPath = getAppliedResultHistoryPath(
+    paths.tasksAppliedHistoryDir,
+    taskId,
+    archiveStamp,
   );
-  await fs.copy(
-    resultPath,
-    getAppliedResultHistoryPath(
-      paths.tasksAppliedHistoryDir,
-      taskId,
-      archiveStamp,
-    ),
-  );
-  await fs.remove(resultPath);
+  await fs.ensureDir(dirname(appliedResultPath));
+  await fs.ensureDir(dirname(appliedResultHistoryPath));
+  await fs.move(resultPath, appliedResultPath, {
+    overwrite: true,
+  });
+  await fs.copy(appliedResultPath, appliedResultHistoryPath, {
+    overwrite: true,
+  });
 }
 
 function createRunDebugEmitter(
@@ -2636,6 +2761,18 @@ function formatRunDuration(milliseconds: number): string {
   }
 
   return `${minutes}m ${seconds}s`;
+}
+
+function resolveFileIoConcurrency(): number {
+  return Math.min(Math.max(2, Math.floor(getAvailableParallelism() / 2)), 8);
+}
+
+function getAvailableParallelism(): number {
+  try {
+    return availableParallelism();
+  } catch {
+    return 4;
+  }
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
