@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@documirror/adapters-filequeue",
+    "@documirror/adapters-openai",
+    "@documirror/core",
+    "@documirror/crawler",
+    "@documirror/i18n",
+    "@documirror/parser",
+    "@documirror/shared",
+    "@documirror/site-builder",
+    "@documirror/templates"
+  ]
+}

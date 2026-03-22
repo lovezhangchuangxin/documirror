@@ -120,6 +120,21 @@ DocuMirror 适合需要这些能力的文档团队：
 - Node.js `>= 20`
 - `pnpm` `10.x`
 
+## 安装
+
+全局安装已发布的 CLI：
+
+```bash
+npm install --global @documirror/cli
+documirror --help
+```
+
+如果只是临时执行一次，也可以直接用：
+
+```bash
+pnpm dlx @documirror/cli --help
+```
+
 ## 开发
 
 安装依赖：
@@ -142,7 +157,7 @@ pnpm typecheck
 pnpm test
 ```
 
-构建并全局注册 CLI：
+从本地源码构建并全局注册 CLI：
 
 ```bash
 pnpm build
@@ -153,91 +168,94 @@ documirror --help
 
 ## CLI 快速开始
 
-完成上面的全局链接后，后续都使用 `documirror` 命令。
+安装 `@documirror/cli` 后，后续都使用 `documirror` 命令。
 
 交互式初始化镜像仓库：
 
 ```bash
 documirror init --repo ./my-mirror
+cd ./my-mirror
 ```
+
+进入镜像仓库根目录后，`--repo` 默认就是当前目录，可以省略。
 
 后续修改 AI 配置：
 
 ```bash
-documirror config ai --repo ./my-mirror
+documirror config ai
 ```
 
 抓取源站：
 
 ```bash
-documirror crawl --repo ./my-mirror
+documirror crawl
 ```
 
 抽取可翻译内容：
 
 ```bash
-documirror extract --repo ./my-mirror
+documirror extract
 ```
 
 生成翻译任务：
 
 ```bash
-documirror translate plan --repo ./my-mirror
+documirror translate plan
 ```
 
 运行自动翻译：
 
 ```bash
-documirror translate run --repo ./my-mirror
+documirror translate run
 ```
 
 调试耗时过长或看起来卡住的翻译运行：
 
 ```bash
-documirror translate run --repo ./my-mirror --debug
+documirror translate run --debug
 ```
 
 如需检查生成结果，可单独校验：
 
 ```bash
-documirror translate verify --repo ./my-mirror --task <taskId>
+documirror translate verify --task <taskId>
 ```
 
 导入翻译结果：
 
 ```bash
-documirror translate apply --repo ./my-mirror
+documirror translate apply
 ```
 
 分析较慢的导入阶段：
 
 ```bash
-documirror translate apply --repo ./my-mirror --profile
+documirror translate apply --profile
 ```
 
 构建翻译镜像：
 
 ```bash
-documirror build --repo ./my-mirror
+documirror build
 ```
 
 分析较慢的构建阶段：
 
 ```bash
-documirror build --repo ./my-mirror --profile
+documirror build --profile
 ```
 
 运行增量流水线：
 
 ```bash
-documirror update --repo ./my-mirror
+documirror update
 ```
 
 检查仓库健康状态：
 
 ```bash
-documirror doctor --repo ./my-mirror
-documirror status --repo ./my-mirror
+documirror doctor
+documirror status
 ```
 
 ## AI 配置

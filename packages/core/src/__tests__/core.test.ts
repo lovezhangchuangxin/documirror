@@ -111,10 +111,10 @@ describe("documirror core pipeline", () => {
     expect(envBody).toContain("DOCUMIRROR_AI_AUTH_TOKEN=secret-token");
     expect(gitIgnoreBody).toContain(".env");
     expect(mirrorPackage.scripts["documirror:translate:run"]).toBe(
-      "documirror translate run --repo .",
+      "documirror translate run",
     );
     expect(mirrorPackage.scripts["documirror:config:ai"]).toBe(
-      "documirror config ai --repo .",
+      "documirror config ai",
     );
     expect(mirrorReadme).toContain("pnpm documirror:translate:run");
     expect(mirrorAgents).toContain(".env");

@@ -53,7 +53,7 @@ export function renderTaskQueueBoard(
     `Generated: ${manifest.generatedAt}`,
     `Summary: total ${manifest.summary.total}, pending ${manifest.summary.pending}, done ${manifest.summary.done}, applied ${manifest.summary.applied}, invalid ${manifest.summary.invalid}`,
     "",
-    "Run automatic translation with `documirror translate run --repo .`.",
+    "Run automatic translation with `documirror translate run`.",
     "",
     "## Tasks",
   ];

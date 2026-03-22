@@ -55,7 +55,11 @@ program
 program
   .command("init")
   .description("Initialize a new mirror repository")
-  .option("--repo <dir>", "target repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "target repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .option("--site-url <url>", "source documentation site url")
   .option("--locale <locale>", "target locale, for example zh-CN")
   .option("--provider <provider>", "display name for the llm provider")
@@ -103,7 +107,11 @@ const config = program.command("config").description("Manage configuration");
 config
   .command("ai")
   .description("Configure AI model settings")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .option("--provider <provider>", "display name for the llm provider")
   .option("--base-url <url>", "openai-compatible api base url")
   .option("--model <model>", "model name")
@@ -167,7 +175,11 @@ config
 program
   .command("crawl")
   .description("Crawl the source documentation site")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .action(async (options) => {
     await runWithSpinner(
       "Crawling source site",
@@ -194,7 +206,11 @@ program
 program
   .command("extract")
   .description("Extract translatable content from crawled pages")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .action(async (options) => {
     await runWithSpinner(
       "Extracting translatable content",
@@ -212,7 +228,11 @@ const translate = program
 translate
   .command("plan")
   .description("Generate translation tasks for new or stale segments")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .action(async (options) => {
     await runWithSpinner("Planning translation tasks", async ({ logger }) => {
       const summary = await planTranslations(options.repo, logger);
@@ -223,7 +243,11 @@ translate
 translate
   .command("run")
   .description("Execute automatic translation using configured AI model")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .option("--debug", "print per-task debug logs")
   .action(async (options) => {
     await runWithSpinner(
@@ -290,7 +314,11 @@ translate
   .command("verify")
   .description("Validate a translation result file")
   .requiredOption("--task <taskId>", "task id to verify")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .option("--result <path>", "explicit result file to verify")
   .action(async (options) => {
     await runWithSpinner("Verifying translation result", async ({ logger }) => {
@@ -330,7 +358,11 @@ translate
 translate
   .command("apply")
   .description("Accept verified translation results")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .option("--profile", "print stage timings")
   .action(async (options) => {
     await runWithSpinner(
@@ -357,7 +389,11 @@ translate
 program
   .command("build")
   .description("Build the translated mirror site")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .option("--profile", "print stage timings")
   .action(async (options) => {
     await runWithSpinner(
@@ -384,7 +420,11 @@ program
 program
   .command("update")
   .description("Run incremental crawl, extract, and plan")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .action(async (options) => {
     await runWithSpinner(
       "Running incremental update",
@@ -407,7 +447,11 @@ program
 program
   .command("doctor")
   .description("Check mirror health and diagnose issues")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .action(async (options) => {
     await runWithSpinner("Checking mirror health", async () => {
       const summary = await doctorMirror(options.repo);
@@ -418,7 +462,11 @@ program
 program
   .command("status")
   .description("Show current mirror repository status")
-  .option("--repo <dir>", "mirror repository directory", process.cwd())
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
   .action(async (options) => {
     const status = await getMirrorStatus(options.repo);
     console.log(pc.bold("DocuMirror Status"));

@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible problem with DocuMirror.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please provide a minimal repro and the exact command you ran.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include commands, config snippets, and input URLs if possible.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Node.js version, pnpm version, and DocuMirror version.
+    validations:
+      required: true

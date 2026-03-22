@@ -15,15 +15,21 @@
   },
   "scripts": {
     "build": "pnpm -r --filter './packages/*' build",
-    "clean": "pnpm -r --filter './packages/*' clean",
+    "changeset": "changeset",
+    "clean": "pnpm -r --filter './packages/*' clean && rm -rf .artifacts",
     "commitlint": "commitlint --edit",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "lint": "eslint .",
     "lint-staged": "lint-staged",
+    "pack:cli": "rm -rf .artifacts && mkdir -p .artifacts && pnpm --filter @documirror/cli build && pnpm --filter @documirror/cli pack --pack-destination .artifacts",
     "prepare": "simple-git-hooks",
+    "release": "changeset publish",
+    "release:check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm pack:cli && pnpm smoke:cli",
+    "smoke:cli": "node ./scripts/smoke-cli-package.mjs",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "version-packages": "changeset version"
   },
   "lint-staged": {
     "*.{ts,tsx,js,mjs,cjs,mts,cts}": [
@@ -40,6 +46,7 @@
     "pre-push": "pnpm typecheck && pnpm test"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.7",
     "@commitlint/cli": "^20.5.0",
     "@commitlint/config-conventional": "^20.5.0",
     "@eslint/js": "^10.0.1",
@@ -52,6 +59,7 @@
     "@vitest/coverage-v8": "^4.1.0",
     "eslint": "^10.0.3",
     "lint-staged": "^16.4.0",
+    "publint": "^0.3.12",
     "prettier": "^3.8.1",
     "simple-git-hooks": "^2.13.1",
     "tsdown": "^0.21.4",

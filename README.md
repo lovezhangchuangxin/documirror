@@ -120,6 +120,21 @@ After `init`, a mirror repository uses this working structure:
 - Node.js `>= 20`
 - `pnpm` `10.x`
 
+## Install
+
+Install the published CLI globally:
+
+```bash
+npm install --global @documirror/cli
+documirror --help
+```
+
+For a one-off run without a global install:
+
+```bash
+pnpm dlx @documirror/cli --help
+```
+
 ## Development
 
 Install dependencies:
@@ -142,7 +157,7 @@ pnpm typecheck
 pnpm test
 ```
 
-Build and register the CLI globally:
+Build and register the CLI globally from a local source checkout:
 
 ```bash
 pnpm build
@@ -153,91 +168,95 @@ documirror --help
 
 ## CLI Quick Start
 
-After the global link step above, run the CLI with `documirror`.
+After installing `@documirror/cli`, run the CLI with `documirror`.
 
 Initialize a mirror repository interactively:
 
 ```bash
 documirror init --repo ./my-mirror
+cd ./my-mirror
 ```
+
+Once you are inside the mirror repository root, `--repo` defaults to the
+current directory and can be omitted.
 
 Update AI settings later:
 
 ```bash
-documirror config ai --repo ./my-mirror
+documirror config ai
 ```
 
 Crawl the source site:
 
 ```bash
-documirror crawl --repo ./my-mirror
+documirror crawl
 ```
 
 Extract translatable content:
 
 ```bash
-documirror extract --repo ./my-mirror
+documirror extract
 ```
 
 Generate translation tasks:
 
 ```bash
-documirror translate plan --repo ./my-mirror
+documirror translate plan
 ```
 
 Run automatic translation:
 
 ```bash
-documirror translate run --repo ./my-mirror
+documirror translate run
 ```
 
 Debug a slow or stuck translation run:
 
 ```bash
-documirror translate run --repo ./my-mirror --debug
+documirror translate run --debug
 ```
 
 Verify a generated result if needed:
 
 ```bash
-documirror translate verify --repo ./my-mirror --task <taskId>
+documirror translate verify --task <taskId>
 ```
 
 Apply translated results:
 
 ```bash
-documirror translate apply --repo ./my-mirror
+documirror translate apply
 ```
 
 Profile a slow apply step:
 
 ```bash
-documirror translate apply --repo ./my-mirror --profile
+documirror translate apply --profile
 ```
 
 Build the translated mirror:
 
 ```bash
-documirror build --repo ./my-mirror
+documirror build
 ```
 
 Profile a slow build:
 
 ```bash
-documirror build --repo ./my-mirror --profile
+documirror build --profile
 ```
 
 Run the incremental pipeline:
 
 ```bash
-documirror update --repo ./my-mirror
+documirror update
 ```
 
 Inspect repository health:
 
 ```bash
-documirror doctor --repo ./my-mirror
-documirror status --repo ./my-mirror
+documirror doctor
+documirror status
 ```
 
 ## AI Configuration

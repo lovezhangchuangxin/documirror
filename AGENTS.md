@@ -77,6 +77,12 @@ Do not assume support for:
 - `packages/templates`
   init-time config defaults and task guide text
 
+## Publishing Strategy
+
+- Only `packages/cli` is intended to be published as the public npm package `@documirror/cli`.
+- All other workspace packages remain internal implementation packages and should stay `private` unless a task explicitly expands the public library surface.
+- Release builds may bundle internal `@documirror/*` packages into the CLI artifact, but the source workspace split should remain intact.
+
 ## Architectural Invariants
 
 These behaviors are central to the current design and should be preserved unless the task explicitly changes them:
@@ -181,6 +187,12 @@ If the change affects package entrypoints or build output, also run:
 pnpm build
 ```
 
+If the change affects npm packaging or release automation, also run:
+
+```bash
+pnpm release:check
+```
+
 For documentation-only changes, a full validation pass is not required unless the task explicitly asks for it.
 
 ## Documentation Expectations
@@ -200,6 +212,7 @@ Documentation ownership rules:
 - `README.md` and `README.zh.md` are user-facing and should explain product scope, workflow, and usage.
 - `AGENTS.md` is contributor-facing and should capture repository conventions, engineering rules, and agent guidance.
 - User-facing behavior changes should update both README files.
+- Published CLI package usage changes should also update `packages/cli/README.md`.
 - Repository process changes should update `AGENTS.md`.
 - Keep CLI invocation examples aligned across `README.md`, `README.zh.md`, and `AGENTS.md` when the recommended local usage workflow changes.
 - Do not move contribution rules such as commit conventions back into README unless they become directly relevant to end users.
@@ -227,6 +240,15 @@ pnpm build
 cd packages/cli
 pnpm link --global
 documirror --help
+```
+
+Release workflow commands:
+
+```bash
+pnpm changeset
+pnpm version-packages
+pnpm release
+pnpm release:check
 ```
 
 ## Current Gaps

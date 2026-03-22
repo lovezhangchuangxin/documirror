@@ -14,31 +14,31 @@ This document is the operating guide for automatic API translation and manual re
 1. Generate translation tasks:
 
 \`\`\`bash
-documirror translate plan --repo .
+documirror translate plan
 \`\`\`
 
 2. Run automatic translation:
 
 \`\`\`bash
-documirror translate run --repo .
+documirror translate run
 \`\`\`
 
    If a run looks stuck, rerun it with debug logs enabled:
 
 \`\`\`bash
-documirror translate run --repo . --debug
+documirror translate run --debug
 \`\`\`
 
 3. Verify a generated result if needed:
 
 \`\`\`bash
-documirror translate verify --repo . --task <taskId>
+documirror translate verify --task <taskId>
 \`\`\`
 
 4. Apply verified results:
 
 \`\`\`bash
-documirror translate apply --repo .
+documirror translate apply
 \`\`\`
 
 If automatic translation fails for a task, inspect \`reports/translation-run/<taskId>.json\`, adjust the AI config or prompt inputs, then rerun \`translate run\`. Use \`--debug\` when you need to see whether it is blocked on task loading, the API request, first streamed content, response parsing, validation, or retry handling.
