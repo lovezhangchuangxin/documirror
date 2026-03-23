@@ -11,7 +11,6 @@ import type { loadConfig } from "../../storage";
 import { readJson, writeJson } from "../../storage";
 import type {
   Logger,
-  TranslationDraftResultFile,
   TranslationTaskFile,
   TranslationTaskMappingFile,
   TranslationVerificationIssue,
@@ -20,6 +19,7 @@ import { createTimestamp } from "@documirror/shared";
 
 import type { RepoPaths } from "../../types";
 import type {
+  PreparedTaskRunSession,
   RunTaskSnapshot,
   RunTaskViewResult,
   SegmentIndex,
@@ -77,6 +77,48 @@ export async function runSingleTask(options: {
     onDebug,
     getSnapshot,
   } = options;
+  const session = await prepareTaskRunSession({
+    paths,
+    taskId,
+    config,
+    segmentIndex,
+    onDebug,
+  });
+
+  while (session.pendingChunkIndices.length > 0) {
+    await runNextPreparedTaskChunk({
+      repoDir,
+      paths,
+      session,
+      authToken,
+      config,
+      segmentIndex,
+      logger,
+      signal,
+      onProgress,
+      onDebug,
+      getSnapshot,
+    });
+  }
+
+  await finalizeTaskRunSession({
+    repoDir,
+    paths,
+    session,
+    config,
+    segmentIndex,
+    onDebug,
+  });
+}
+
+export async function prepareTaskRunSession(options: {
+  paths: RepoPaths;
+  taskId: string;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  segmentIndex: SegmentIndex;
+  onDebug?: (message: string) => void;
+}): Promise<PreparedTaskRunSession> {
+  const { paths, taskId, config, segmentIndex, onDebug } = options;
   onDebug?.(`${taskId}: loading task bundle`);
   const task = parseTaskFile(
     await readJson(getPendingTaskPath(paths, taskId), {}),
@@ -120,71 +162,127 @@ export async function runSingleTask(options: {
     );
   }
 
-  const chunkDrafts: Array<{
-    chunk: PlannedPageChunk;
-    draft: TranslationDraftResultFile;
-    originalIds: string[];
-  }> = [];
-
-  for (const chunk of chunkPlan.chunks) {
-    const artifacts = createChunkTaskArtifacts(task, mapping, chunk);
-    const result = await runTaskView({
-      repoDir,
-      paths,
-      taskId,
-      task: artifacts.task,
-      mapping: artifacts.mapping,
-      authToken,
-      config,
-      segmentIndex,
-      logger,
-      signal,
-      onProgress,
-      onDebug,
-      getSnapshot,
-      chunk: chunkPlan.chunks.length > 1 ? chunk : undefined,
-    });
-    chunkDrafts.push({
-      chunk,
-      draft: result.draft,
-      originalIds: artifacts.originalIds,
-    });
-  }
-
-  const finalDraft =
-    chunkDrafts.length === 1 && chunkDrafts[0]?.chunk.isWholeTask
-      ? chunkDrafts[0].draft
-      : mergeChunkDrafts({
-          taskId,
-          chunkDrafts,
-        });
-  const finalVerification = verifyCandidateResult(
+  return {
+    taskId,
     task,
     mapping,
+    chunkPlan,
+    pendingChunkIndices: chunkPlan.chunks.map((_, index) => index),
+    chunkDrafts: [],
+  };
+}
+
+export async function runNextPreparedTaskChunk(options: {
+  repoDir: string;
+  paths: RepoPaths;
+  session: PreparedTaskRunSession;
+  authToken: string;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  segmentIndex: SegmentIndex;
+  logger: Logger;
+  signal?: AbortSignal;
+  onProgress?: (event: RunTranslationsProgressEvent) => void;
+  onDebug?: (message: string) => void;
+  getSnapshot: () => RunTaskSnapshot;
+}): Promise<PlannedPageChunk | null> {
+  const {
+    repoDir,
+    paths,
+    session,
+    authToken,
+    config,
+    segmentIndex,
+    logger,
+    signal,
+    onProgress,
+    onDebug,
+    getSnapshot,
+  } = options;
+  const chunkIndex = session.pendingChunkIndices.shift();
+  if (chunkIndex === undefined) {
+    return null;
+  }
+
+  const chunk = session.chunkPlan.chunks[chunkIndex];
+  if (!chunk) {
+    throw new Error(
+      `Chunk ${chunkIndex} is missing for prepared session ${session.taskId}`,
+    );
+  }
+  const artifacts = createChunkTaskArtifacts(
+    session.task,
+    session.mapping,
+    chunk,
+  );
+  const result = await runTaskView({
+    repoDir,
+    paths,
+    taskId: session.taskId,
+    task: artifacts.task,
+    mapping: artifacts.mapping,
+    authToken,
+    config,
+    segmentIndex,
+    logger,
+    signal,
+    onProgress,
+    onDebug,
+    getSnapshot,
+    chunk: session.chunkPlan.chunks.length > 1 ? chunk : undefined,
+  });
+  session.chunkDrafts.push({
+    chunk,
+    draft: result.draft,
+    originalIds: artifacts.originalIds,
+  });
+
+  return chunk;
+}
+
+export async function finalizeTaskRunSession(options: {
+  repoDir: string;
+  paths: RepoPaths;
+  session: PreparedTaskRunSession;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  segmentIndex: SegmentIndex;
+  onDebug?: (message: string) => void;
+}): Promise<void> {
+  const { repoDir, paths, session, config, segmentIndex, onDebug } = options;
+  const finalDraft =
+    session.chunkDrafts.length === 1 &&
+    session.chunkDrafts[0]?.chunk.isWholeTask
+      ? session.chunkDrafts[0].draft
+      : mergeChunkDrafts({
+          taskId: session.taskId,
+          chunkDrafts: session.chunkDrafts,
+        });
+  const finalVerification = verifyCandidateResult(
+    session.task,
+    session.mapping,
     segmentIndex,
     finalDraft,
   );
   if (!finalVerification.ok) {
     await writeRunFailureReport(
       paths,
-      taskId,
+      session.taskId,
       config.ai.maxAttemptsPerTask,
       finalVerification.errors,
       JSON.stringify(finalDraft, null, 2),
       finalVerification.errors[0]?.message ??
-        `Merged translation failed verification for ${taskId}`,
+        `Merged translation failed verification for ${session.taskId}`,
     );
     throw new Error(
       finalVerification.errors[0]?.message ??
-        `Merged translation failed verification for ${taskId}`,
+        `Merged translation failed verification for ${session.taskId}`,
     );
   }
 
-  const resultPath = getDoneResultPath(paths, taskId);
-  onDebug?.(`${taskId}: passed validation; writing merged result`);
+  const resultPath = getDoneResultPath(paths, session.taskId);
+  onDebug?.(`${session.taskId}: passed validation; writing merged result`);
   const result = {
     schemaVersion: 2 as const,
-    taskId,
+    taskId: session.taskId,
     provider: config.ai.llmProvider,
     model: config.ai.modelName,
     completedAt: createTimestamp(),
@@ -195,14 +293,14 @@ export async function runSingleTask(options: {
   await writeVerificationReport(
     repoDir,
     paths,
-    taskId,
+    session.taskId,
     resultPath,
     resultBody,
     finalVerification,
   );
-  await fs.remove(getRunFailureReportPath(paths, taskId));
+  await fs.remove(getRunFailureReportPath(paths, session.taskId));
   onDebug?.(
-    `${taskId}: wrote done result and verification report to ${toRepoRelativePath(repoDir, resultPath)}`,
+    `${session.taskId}: wrote done result and verification report to ${toRepoRelativePath(repoDir, resultPath)}`,
   );
 }
 

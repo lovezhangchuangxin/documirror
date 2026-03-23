@@ -4,9 +4,11 @@ import type {
   TranslationDraftResultFile,
   TranslationInlineGroupPlan,
   TranslationResultFile,
+  TranslationTaskFile,
   TranslationTaskMappingFile,
   TranslationVerificationIssue,
 } from "@documirror/shared";
+import type { PageChunkPlan, PlannedPageChunk } from "../page-chunking";
 
 export type PlannedPageTask = {
   pageUrl: string;
@@ -59,6 +61,21 @@ export type InlineGroupPlanBuildResult =
 export type RunTaskViewResult = {
   draft: TranslationDraftResultFile;
   verification: CandidateVerification;
+};
+
+export type PreparedTaskRunChunkDraft = {
+  chunk: PlannedPageChunk;
+  draft: TranslationDraftResultFile;
+  originalIds: string[];
+};
+
+export type PreparedTaskRunSession = {
+  taskId: string;
+  task: TranslationTaskFile;
+  mapping: TranslationTaskMappingFile;
+  chunkPlan: PageChunkPlan;
+  pendingChunkIndices: number[];
+  chunkDrafts: PreparedTaskRunChunkDraft[];
 };
 
 export type PreparedApplyTaskBundle = {
