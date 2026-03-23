@@ -19,12 +19,42 @@ DocuMirror 适合需要这些能力的文档团队：
 
 当前仓库提供：
 
-- `init`、`config ai`、`crawl`、`extract`、`translate plan`、`translate run`、`translate verify`、`translate apply`、`build`、`update`、`doctor`、`status` 命令
+- `init`、`config ai`、`crawl`、`extract`、`translate plan`、`translate run`、`translate verify`、`translate apply`、`build`、`update`、`auto`、`doctor`、`status` 命令
 - 基于 `pnpm` workspace 的 crawler、parser、i18n、builder、OpenAI adapter、CLI 拆包结构
 - 基于 `sourceHash` 的 segment 级增量翻译规划
 - 按页面打包的任务文件与短 ID
 - 基于 `openai` npm 包、面向 OpenAI 兼容接口的并发自动翻译
 - 保存在 `.documirror/` 下的本地 JSON/JSONL 状态
+
+## 快速开始
+
+安装 CLI：
+
+```bash
+npm install --global @documirror/cli
+```
+
+初始化镜像仓库：
+
+```bash
+documirror init --repo ./my-mirror
+cd ./my-mirror
+```
+
+运行常用的一键完整流程：
+
+```bash
+documirror auto
+```
+
+需要时查看当前状态：
+
+```bash
+documirror status
+documirror doctor
+```
+
+日常增量流程优先使用 `auto`。它会按顺序执行 `update`、`translate run`、`translate apply` 和 `build`。如果部分翻译 task 失败，它仍会导入成功结果并继续构建，但最终会返回非零退出码，方便 CI 和操作人员识别这次运行并不完整。
 
 ## 当前范围
 
@@ -62,7 +92,7 @@ DocuMirror 适合需要这些能力的文档团队：
 7. `build`
    把翻译内容重新写回 HTML，最后在 `site/` 下输出镜像站。排查本地构建较慢时，可以加 `--profile` 输出构建阶段耗时。对于 hydration 之后仍会把英文重新插回正文的站点，还可以显式开启 `build.runtimeReconciler`，让构建产物额外注入一个运行时兜底层，在浏览器里于 DOM 更新后重新修正文本文本节点和白名单属性。
 
-增量更新时，运行 `update`，然后按需重复翻译、应用和构建。
+常见的增量流程直接运行 `auto` 即可。需要手动控制或排障时，再运行 `update`，然后按需重复翻译、导入和构建。
 
 ## 仓库结构
 
@@ -166,7 +196,7 @@ pnpm link --global
 documirror --help
 ```
 
-## CLI 快速开始
+## CLI 参考
 
 安装 `@documirror/cli` 后，后续都使用 `documirror` 命令。
 
@@ -249,6 +279,12 @@ documirror build --profile
 
 ```bash
 documirror update
+```
+
+打开 translate run 调试日志执行完整自动流水线：
+
+```bash
+documirror auto --debug
 ```
 
 检查仓库健康状态：

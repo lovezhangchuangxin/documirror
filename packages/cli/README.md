@@ -32,7 +32,15 @@ cd ./my-mirror
 Once you are inside the mirror repository root, `--repo` defaults to the
 current directory and can be omitted.
 
-Run the end-to-end update pipeline:
+Run the one-shot automatic pipeline:
+
+```bash
+documirror auto
+```
+
+This runs `update`, `translate run`, `translate apply`, and `build` in order. If translation leaves some tasks failed, `auto` still applies successful results and builds the site, but returns a non-zero exit code.
+
+For manual control, you can still run the incremental update step directly:
 
 ```bash
 documirror update

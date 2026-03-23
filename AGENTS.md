@@ -94,6 +94,8 @@ These behaviors are central to the current design and should be preserved unless
 - `translate run` must validate model output before writing final result files.
 - `translate run` may split a large page task into a few runtime chunks internally, but the persisted task and result files remain page-based.
 - `translate apply` must reject stale results whose `sourceHash` no longer matches the current source segment.
+- `auto` orchestrates `update`, `translate run`, `translate apply`, and `build` in that order, while keeping those underlying commands independently usable.
+- `auto` may continue into `translate apply` and `build` after partial `translate run` failures, but it must still surface the incomplete overall outcome clearly.
 - core owns orchestration; CLI should remain thin and interactive.
 - shared schemas belong in `packages/shared`.
 - provider-specific request handling should stay inside `packages/adapters-openai`, not leak across packages.
@@ -240,6 +242,21 @@ pnpm build
 cd packages/cli
 pnpm link --global
 documirror --help
+```
+
+Recommended mirror workflow from inside a mirror repository:
+
+```bash
+documirror auto
+```
+
+Manual mirror workflow for troubleshooting or finer control:
+
+```bash
+documirror update
+documirror translate run
+documirror translate apply
+documirror build
 ```
 
 Release workflow commands:

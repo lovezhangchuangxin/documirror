@@ -6,6 +6,7 @@ import process from "node:process";
 
 import {
   applyTranslations,
+  runAutoPipeline,
   buildMirror,
   crawlMirror,
   doctorMirror,
@@ -37,6 +38,14 @@ import {
   createRunProgressState,
   formatRunProgressMessage,
 } from "./run-progress";
+import {
+  formatAutoCompletionMessage,
+  formatAutoFinalSummary,
+  formatAutoRunProgress,
+  formatAutoStageSummary,
+  formatAutoStageTitle,
+  formatAutoUpdateProgress,
+} from "./auto-output";
 import {
   formatCrawlOutput,
   formatFatalCrawlMessage,
@@ -381,6 +390,119 @@ translate
             persistInfo,
           );
           throw error;
+        }
+      },
+    );
+  });
+
+program
+  .command("auto")
+  .description("Run update, automatic translation, apply, and build")
+  .option(
+    "--repo <dir>",
+    "mirror repository directory (defaults to current directory)",
+    process.cwd(),
+  )
+  .option("--debug", "print translate-run debug logs during the auto pipeline")
+  .option("--profile", "print stage timings for apply and build")
+  .action(async (options) => {
+    await runWithSpinner(
+      "Running automatic pipeline",
+      async ({ logger, setText, signal, persistInfo }) => {
+        const runProgressState = createRunProgressState();
+        let runProgressTimer: NodeJS.Timeout | undefined;
+        let runDebugHeartbeatTimer: NodeJS.Timeout | undefined;
+
+        const clearRunTimers = () => {
+          if (runProgressTimer) {
+            clearInterval(runProgressTimer);
+            runProgressTimer = undefined;
+          }
+          if (runDebugHeartbeatTimer) {
+            clearInterval(runDebugHeartbeatTimer);
+            runDebugHeartbeatTimer = undefined;
+          }
+        };
+
+        try {
+          const summary = await runAutoPipeline(
+            options.repo,
+            logger,
+            (event) => {
+              switch (event.type) {
+                case "stageStarted":
+                  setText(formatAutoStageTitle(event.stage));
+                  if (event.stage === "run") {
+                    const refresh = () => {
+                      setText(formatAutoRunProgress(runProgressState));
+                    };
+                    refresh();
+                    runProgressTimer = setInterval(refresh, 1000);
+                    runProgressTimer.unref();
+                    if (options.debug) {
+                      runDebugHeartbeatTimer = setInterval(() => {
+                        persistInfo(
+                          `[run debug] ${formatRunProgressMessage(runProgressState)}`,
+                        );
+                      }, 15_000);
+                      runDebugHeartbeatTimer.unref();
+                    }
+                  }
+                  return;
+                case "crawlProgress":
+                  setText(
+                    formatAutoUpdateProgress(
+                      event.progress.pageCount,
+                      event.progress.assetCount,
+                    ),
+                  );
+                  return;
+                case "runProgress":
+                  applyRunProgressEvent(runProgressState, event.event);
+                  setText(formatAutoRunProgress(runProgressState));
+                  if (event.event.type === "failed") {
+                    logger.warn(
+                      `${event.event.taskId} failed: ${event.event.error} (${event.event.reportPath})`,
+                    );
+                  }
+                  return;
+                case "stageCompleted":
+                  if (event.stage === "run") {
+                    clearRunTimers();
+                  }
+                  formatAutoStageSummary(event.summary).forEach(persistInfo);
+                  return;
+                case "stageFailed":
+                  if (event.stage === "run") {
+                    clearRunTimers();
+                  }
+                  formatAutoStageSummary(event.summary).forEach(persistInfo);
+                  return;
+              }
+            },
+            signal,
+            {
+              profile: options.profile === true,
+              onDebug: options.debug
+                ? (message) => {
+                    persistInfo(`[run debug] ${message}`);
+                  }
+                : undefined,
+            },
+          );
+
+          const finalDetails = formatAutoFinalSummary(summary);
+          if (!summary.ok) {
+            finalDetails.forEach(persistInfo);
+            throw new Error(formatAutoCompletionMessage(summary));
+          }
+
+          return {
+            message: formatAutoCompletionMessage(summary),
+            details: finalDetails,
+          };
+        } finally {
+          clearRunTimers();
         }
       },
     );

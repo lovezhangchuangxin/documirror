@@ -27,6 +27,7 @@ export function createMirrorRepoPackageJson(
       "documirror:translate:apply": "documirror translate apply",
       "documirror:build": "documirror build",
       "documirror:update": "documirror update",
+      "documirror:auto": "documirror auto",
       "documirror:doctor": "documirror doctor",
       "documirror:status": "documirror status",
     },

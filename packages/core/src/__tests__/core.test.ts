@@ -113,11 +113,14 @@ describe("documirror core pipeline", () => {
     expect(mirrorPackage.scripts["documirror:translate:run"]).toBe(
       "documirror translate run",
     );
+    expect(mirrorPackage.scripts["documirror:auto"]).toBe("documirror auto");
     expect(mirrorPackage.scripts["documirror:config:ai"]).toBe(
       "documirror config ai",
     );
+    expect(mirrorReadme).toContain("pnpm documirror:auto");
     expect(mirrorReadme).toContain("pnpm documirror:translate:run");
     expect(mirrorAgents).toContain(".env");
+    expect(mirrorAgents).toContain("pnpm documirror:auto");
   });
 
   it("plans tasks, runs automatic translation, verifies, and applies results", async () => {
