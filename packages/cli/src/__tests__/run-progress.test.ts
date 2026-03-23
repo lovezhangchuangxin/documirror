@@ -51,10 +51,10 @@ describe("run translation progress formatting", () => {
       1_000,
     );
 
-    expect(formatRunProgressMessage(state, 31_000)).toContain(
+    expect(stripAnsi(formatRunProgressMessage(state, 31_000))).toContain(
       "0/3 complete, 0 succeeded, 0 failed, 1 running, 2 waiting",
     );
-    expect(formatRunProgressMessage(state, 31_000)).toContain(
+    expect(stripAnsi(formatRunProgressMessage(state, 31_000))).toContain(
       "model openai/gpt-4.1-mini, concurrency 2, timeout 60s, elapsed 31s",
     );
     expect(stripAnsi(formatRunProgressMessage(state, 31_000))).toContain(
@@ -312,7 +312,7 @@ describe("run translation progress formatting", () => {
       5_000,
     );
 
-    const message = formatRunProgressMessage(state, 5_000);
+    const message = stripAnsi(formatRunProgressMessage(state, 5_000));
     expect(message).toContain(
       "1/1 complete, 1 succeeded, 0 failed, 0 running, 0 waiting",
     );
