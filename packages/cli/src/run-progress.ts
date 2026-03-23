@@ -2,6 +2,7 @@ import type { RunTranslationsProgressEvent } from "@documirror/core";
 import pc from "picocolors";
 
 type ActiveRunTask = {
+  activityId: string;
   taskId: string;
   attempt: number;
   maxAttempts: number;
@@ -29,6 +30,7 @@ export type RunProgressState = {
   requestTimeoutMs: number;
   startedAt: number;
   activeTasks: Map<string, ActiveRunTask>;
+  pageStartedAt: Map<string, number>;
   // Metrics for success rate and average duration
   totalAttempts: number;
   successfulAttempts: number;
@@ -48,6 +50,7 @@ export function createRunProgressState(now = Date.now()): RunProgressState {
     requestTimeoutMs: 0,
     startedAt: now,
     activeTasks: new Map(),
+    pageStartedAt: new Map(),
     totalAttempts: 0,
     successfulAttempts: 0,
     totalSuccessDurationMs: 0,
@@ -71,6 +74,7 @@ export function applyRunProgressEvent(
     state.requestTimeoutMs = event.requestTimeoutMs;
     state.startedAt = now;
     state.activeTasks.clear();
+    state.pageStartedAt.clear();
     state.totalAttempts = 0;
     state.successfulAttempts = 0;
     state.totalSuccessDurationMs = 0;
@@ -82,38 +86,34 @@ export function applyRunProgressEvent(
   state.completed = event.completed;
 
   if (event.type === "started") {
-    // Task starts - initialize with fresh timestamps
-    state.activeTasks.set(event.taskId, {
-      taskId: event.taskId,
-      attempt: 1,
-      maxAttempts: 0,
-      chunk: undefined,
-      attemptStartedAt: now,
-      taskStartedAt: now,
-    });
+    state.pageStartedAt.set(event.taskId, now);
     return;
   }
 
   if (event.type === "attempt") {
     state.totalAttempts += 1;
-    const current = state.activeTasks.get(event.taskId);
-    state.activeTasks.set(event.taskId, {
-      taskId: event.taskId,
+    const activityId = event.activityId ?? event.taskId;
+    const pageTaskId = event.pageTaskId ?? event.taskId;
+    const current = state.activeTasks.get(activityId);
+    state.activeTasks.set(activityId, {
+      activityId,
+      taskId: pageTaskId,
       attempt: event.attempt,
       maxAttempts: event.maxAttempts,
       chunk: event.chunk,
       attemptStartedAt: now,
-      // Preserve the original task start time
-      taskStartedAt: current?.taskStartedAt ?? now,
+      taskStartedAt:
+        current?.taskStartedAt ?? state.pageStartedAt.get(pageTaskId) ?? now,
     });
     return;
   }
 
   if (event.type === "attemptCompleted") {
     state.successfulAttempts += 1;
-    const current = state.activeTasks.get(event.taskId);
+    const activityId = event.activityId ?? event.taskId;
+    const current = state.activeTasks.get(activityId);
     if (current) {
-      state.activeTasks.set(event.taskId, {
+      state.activeTasks.set(activityId, {
         ...current,
         chunk: event.chunk ?? current.chunk,
       });
@@ -122,20 +122,23 @@ export function applyRunProgressEvent(
   }
 
   // For completed/failed events
-  const activeTask = state.activeTasks.get(event.taskId);
-  if (activeTask) {
-    // Use taskStartedAt to track total duration from task start (including retries)
-    const durationMs = now - activeTask.taskStartedAt;
+  const taskStartedAt = state.pageStartedAt.get(event.taskId);
+  if (taskStartedAt !== undefined) {
+    const durationMs = now - taskStartedAt;
     if (event.type === "completed") {
       state.totalSuccessDurationMs += durationMs;
       state.successWithDurationCount += 1;
     }
-    // Note: failed attempts are already counted via totalAttempts - successCount
   }
 
   state.successCount = event.successCount;
   state.failureCount = event.failureCount;
-  state.activeTasks.delete(event.taskId);
+  state.pageStartedAt.delete(event.taskId);
+  for (const [activityId, activeTask] of state.activeTasks.entries()) {
+    if (activeTask.taskId === event.taskId) {
+      state.activeTasks.delete(activityId);
+    }
+  }
 }
 
 export function formatRunProgressMessage(

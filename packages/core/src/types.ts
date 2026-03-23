@@ -119,6 +119,8 @@ export type RunTranslationsProgressEvent =
   | {
       type: "attempt";
       taskId: string;
+      pageTaskId?: string;
+      activityId?: string;
       attempt: number;
       maxAttempts: number;
       completed: number;
@@ -128,6 +130,8 @@ export type RunTranslationsProgressEvent =
   | {
       type: "attemptCompleted";
       taskId: string;
+      pageTaskId?: string;
+      activityId?: string;
       completed: number;
       total: number;
       chunk?: RunTaskChunkProgress;

@@ -3,6 +3,7 @@ export type CoordinatorPage = {
   hasPendingChunks(): boolean;
   startNextChunk(): Promise<void>;
   onChunkSettled(): void;
+  finalize?(): Promise<void>;
 };
 
 type ActiveCoordinatorPage = {
@@ -25,7 +26,7 @@ export async function runWithCoordinator(options: {
     activePages.length > 0 ||
     inFlight.size > 0
   ) {
-    pruneCompletedPages(activePages);
+    await finalizeCompletedPages(activePages);
     activatePages(queuedPages, activePages, concurrency);
     dispatchBaselineChunks(activePages, inFlight, concurrency);
     dispatchBorrowedChunks(
@@ -40,14 +41,16 @@ export async function runWithCoordinator(options: {
     );
 
     if (inFlight.size === 0) {
-      break;
+      continue;
     }
 
     await Promise.race(inFlight);
   }
 }
 
-function pruneCompletedPages(activePages: ActiveCoordinatorPage[]): void {
+async function finalizeCompletedPages(
+  activePages: ActiveCoordinatorPage[],
+): Promise<void> {
   for (let index = activePages.length - 1; index >= 0; index -= 1) {
     const activePage = activePages[index];
     if (!activePage) {
@@ -55,6 +58,7 @@ function pruneCompletedPages(activePages: ActiveCoordinatorPage[]): void {
     }
 
     if (activePage.runningCount === 0 && !activePage.page.hasPendingChunks()) {
+      await activePage.page.finalize?.();
       activePages.splice(index, 1);
     }
   }

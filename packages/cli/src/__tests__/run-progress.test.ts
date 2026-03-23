@@ -105,6 +105,68 @@ describe("run translation progress formatting", () => {
     expect(message).toContain("waiting 4s");
   });
 
+  it("tracks multiple active chunk attempts for the same page by activity id", () => {
+    const state = createRunProgressState(0);
+
+    applyRunProgressEvent(
+      state,
+      {
+        type: "queued",
+        total: 1,
+        concurrency: 2,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        requestTimeoutMs: 60_000,
+      },
+      0,
+    );
+    applyRunProgressEvent(
+      state,
+      {
+        type: "attempt",
+        taskId: "task_alpha",
+        pageTaskId: "task_alpha",
+        activityId: "task_alpha__chunk_1",
+        attempt: 1,
+        maxAttempts: 3,
+        completed: 0,
+        total: 1,
+        chunk: {
+          chunkIndex: 1,
+          chunkCount: 2,
+          itemStart: 1,
+          itemEnd: 40,
+        },
+      },
+      1_000,
+    );
+    applyRunProgressEvent(
+      state,
+      {
+        type: "attempt",
+        taskId: "task_alpha",
+        pageTaskId: "task_alpha",
+        activityId: "task_alpha__chunk_2",
+        attempt: 1,
+        maxAttempts: 3,
+        completed: 0,
+        total: 1,
+        chunk: {
+          chunkIndex: 2,
+          chunkCount: 2,
+          itemStart: 41,
+          itemEnd: 80,
+        },
+      },
+      1_500,
+    );
+
+    const message = stripAnsi(formatRunProgressMessage(state, 5_000));
+    expect(state.activeTasks.size).toBe(2);
+    expect(message).toContain("chunk 1/2, items 1-40");
+    expect(message).toContain("chunk 2/2, items 41-80");
+  });
+
   it("tracks success rate by successful attempts when chunk retries happen", () => {
     const state = createRunProgressState(0);
 

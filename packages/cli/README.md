@@ -40,6 +40,8 @@ documirror auto
 
 This runs `update`, `translate run`, `translate apply`, and `build` in order. If translation leaves some tasks failed, `auto` still applies successful results and builds the site, but returns a non-zero exit code.
 
+`translate run` keeps using the single `ai.concurrency` budget. It prioritizes page-level parallelism first, then lets runtime chunks from already-active pages borrow any spare request slots when fewer pages are active than the budget. Persisted task and result files stay page-based.
+
 For manual control, you can still run the incremental update step directly:
 
 ```bash

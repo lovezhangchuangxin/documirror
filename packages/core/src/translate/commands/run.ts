@@ -1,8 +1,7 @@
-import pLimit from "p-limit";
 import { join } from "pathe";
 
 import type { Logger } from "@documirror/shared";
-import { defaultLogger } from "@documirror/shared";
+import { createTimestamp, defaultLogger } from "@documirror/shared";
 
 import { resolveAiAuthToken } from "../../ai-config";
 import { getRepoPaths } from "../../repo-paths";
@@ -13,13 +12,22 @@ import type {
   RunTranslationsProgressEvent,
 } from "../../types";
 import { createRunDebugEmitter, formatRunDuration } from "../logging";
+import { writeRunFailureReport } from "../infra/reports";
 import {
   getRunFailureReportPath,
   toRepoRelativePath,
 } from "../infra/task-repository";
 import { isAbortLikeError, throwIfAborted } from "../runtime-utils";
 import { syncTaskManifest } from "../services/task-manifest";
-import { runSingleTask } from "../services/task-runner";
+import {
+  finalizeTaskRunSession,
+  prepareTaskRunSession,
+  runNextPreparedTaskChunk,
+} from "../services/task-runner";
+import {
+  runWithCoordinator,
+  type CoordinatorPage,
+} from "../services/run-coordinator";
 
 export async function runTranslations(
   repoDir: string,
@@ -79,71 +87,165 @@ export async function runTranslations(
     };
   }
 
-  const limit = pLimit(config.ai.concurrency);
-  await Promise.all(
-    pendingTasks.map((entry) =>
-      limit(async () => {
-        throwIfAborted(signal);
-        onProgress?.({
-          type: "started",
-          taskId: entry.taskId,
-          completed,
-          total,
-        });
+  const emitTaskFailure = async (
+    taskId: string,
+    error: unknown,
+    session?: Awaited<ReturnType<typeof prepareTaskRunSession>>,
+  ) => {
+    completed += 1;
+    failureCount += 1;
+    const reportPath = getRunFailureReportPath(paths, taskId);
+    const message = error instanceof Error ? error.message : String(error);
+    const firstChunk = session?.failedChunkReports[0];
 
-        try {
-          await runSingleTask({
-            repoDir,
-            paths,
-            taskId: entry.taskId,
-            authToken,
-            config,
-            segmentIndex,
-            logger,
-            signal,
-            onProgress,
-            onDebug: emitDebug,
-            getSnapshot: () => ({
+    await writeRunFailureReport(paths, {
+      schemaVersion: session?.failedChunkReports.length ? 2 : 1,
+      taskId,
+      failedAt: createTimestamp(),
+      attemptCount: session?.failedChunkReports.length
+        ? Math.max(
+            ...session.failedChunkReports.map((chunk) => chunk.attemptCount),
+          )
+        : config.ai.maxAttemptsPerTask,
+      chunk: firstChunk
+        ? {
+            chunkId: firstChunk.chunkId,
+            chunkIndex: firstChunk.chunkIndex,
+            chunkCount: firstChunk.chunkCount,
+            itemStart: firstChunk.itemStart,
+            itemEnd: firstChunk.itemEnd,
+            headingText: firstChunk.headingText,
+          }
+        : undefined,
+      resultPreview: firstChunk?.resultPreview,
+      errors: firstChunk?.errors ?? [],
+      message,
+      chunks: session?.failedChunkReports.length
+        ? session.failedChunkReports
+        : undefined,
+    });
+
+    emitDebug(
+      `${taskId}: failed after all attempts; report written to ${toRepoRelativePath(repoDir, reportPath)}`,
+    );
+    onProgress?.({
+      type: "failed",
+      taskId,
+      completed,
+      total,
+      successCount,
+      failureCount,
+      error: message,
+      reportPath: toRepoRelativePath(repoDir, reportPath),
+    });
+  };
+
+  const preparedPages: CoordinatorPage[] = [];
+
+  for (const entry of pendingTasks) {
+    throwIfAborted(signal);
+
+    try {
+      const session = await prepareTaskRunSession({
+        paths,
+        taskId: entry.taskId,
+        config,
+        segmentIndex,
+        onDebug: emitDebug,
+      });
+      let started = false;
+      let failedError: Error | undefined;
+
+      preparedPages.push({
+        taskId: entry.taskId,
+        hasPendingChunks() {
+          return !failedError && session.pendingChunkIndices.length > 0;
+        },
+        async startNextChunk() {
+          throwIfAborted(signal);
+          if (!started) {
+            started = true;
+            onProgress?.({
+              type: "started",
+              taskId: entry.taskId,
               completed,
+              total,
+            });
+          }
+
+          try {
+            await runNextPreparedTaskChunk({
+              session,
+              authToken,
+              config,
+              segmentIndex,
+              logger,
+              signal,
+              onProgress,
+              onDebug: emitDebug,
+              getSnapshot: () => ({
+                completed,
+                successCount,
+                failureCount,
+                total,
+              }),
+            });
+          } catch (error) {
+            if (isAbortLikeError(error, signal)) {
+              throw error;
+            }
+
+            failedError =
+              error instanceof Error ? error : new Error(String(error));
+            session.pendingChunkIndices.length = 0;
+          }
+        },
+        onChunkSettled() {},
+        async finalize() {
+          if (failedError) {
+            await emitTaskFailure(entry.taskId, failedError, session);
+            return;
+          }
+
+          try {
+            await finalizeTaskRunSession({
+              repoDir,
+              paths,
+              session,
+              config,
+              segmentIndex,
+              onDebug: emitDebug,
+            });
+            completed += 1;
+            successCount += 1;
+            onProgress?.({
+              type: "completed",
+              taskId: entry.taskId,
+              completed,
+              total,
               successCount,
               failureCount,
-              total,
-            }),
-          });
-          completed += 1;
-          successCount += 1;
-          onProgress?.({
-            type: "completed",
-            taskId: entry.taskId,
-            completed,
-            total,
-            successCount,
-            failureCount,
-          });
-        } catch (error) {
-          if (isAbortLikeError(error, signal)) {
-            throw error;
+            });
+          } catch (error) {
+            if (isAbortLikeError(error, signal)) {
+              throw error;
+            }
+            await emitTaskFailure(entry.taskId, error, session);
           }
-          completed += 1;
-          failureCount += 1;
-          const reportPath = getRunFailureReportPath(paths, entry.taskId);
-          emitDebug(
-            `${entry.taskId}: failed after all attempts; report written to ${toRepoRelativePath(repoDir, reportPath)}`,
-          );
-          onProgress?.({
-            type: "failed",
-            taskId: entry.taskId,
-            completed,
-            total,
-            successCount,
-            failureCount,
-            error: error instanceof Error ? error.message : String(error),
-            reportPath: toRepoRelativePath(repoDir, reportPath),
-          });
-        }
-      }),
-    ),
-  );
+        },
+      });
+    } catch (error) {
+      if (isAbortLikeError(error, signal)) {
+        throw error;
+      }
+      await emitTaskFailure(entry.taskId, error);
+    }
+  }
+
+  await runWithCoordinator({
+    concurrency: config.ai.concurrency,
+    pages: preparedPages,
+  });
 
   await syncTaskManifest(
     repoDir,

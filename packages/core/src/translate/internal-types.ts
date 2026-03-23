@@ -22,7 +22,7 @@ export type RetainPendingTasksResult = {
 };
 
 export type RunFailureReport = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   taskId: string;
   failedAt: string;
   attemptCount: number;
@@ -37,6 +37,18 @@ export type RunFailureReport = {
   resultPreview?: string;
   errors: TranslationVerificationIssue[];
   message: string;
+  chunks?: Array<{
+    chunkId: string;
+    chunkIndex: number;
+    chunkCount: number;
+    itemStart: number;
+    itemEnd: number;
+    headingText?: string;
+    attemptCount: number;
+    resultPreview?: string;
+    errors: TranslationVerificationIssue[];
+    message: string;
+  }>;
 };
 
 export type CandidateVerification = {
@@ -76,6 +88,7 @@ export type PreparedTaskRunSession = {
   chunkPlan: PageChunkPlan;
   pendingChunkIndices: number[];
   chunkDrafts: PreparedTaskRunChunkDraft[];
+  failedChunkReports: NonNullable<RunFailureReport["chunks"]>;
 };
 
 export type PreparedApplyTaskBundle = {

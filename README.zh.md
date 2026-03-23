@@ -86,7 +86,7 @@ documirror doctor
 4. `translate plan`
    仅为新增、过期或缺失 accepted 翻译的 segment 生成任务文件，并刷新任务清单
 5. `translate run`
-   并发调用配置好的 OpenAI 兼容 API，自动校验模型输出，并把通过校验的结果写入 `tasks/done/`。如果运行看起来卡住，可以加 `--debug` 输出每个 task 的请求阶段日志
+   并发调用配置好的 OpenAI 兼容 API，自动校验模型输出，并把通过校验的结果写入 `tasks/done/`。`ai.concurrency` 仍然是唯一的翻译并发配置：优先保证页面级并发，只有活跃页面数小于并发预算时，同一页面的 runtime chunk 才会借用剩余请求槽位。如果运行看起来卡住，可以加 `--debug` 输出每个 task 的请求阶段日志
 6. `translate apply`
    再次校验并把结果导入翻译存储。排查本地导入较慢时，可以加 `--profile` 输出阶段耗时。
 7. `build`
@@ -368,7 +368,7 @@ documirror status
 - `completedAt`
 - 按短 ID 对应的译文项
 
-`translate run` 会把 task、glossary 和校验错误一起喂给模型，在模型输出 JSON 非法或校验失败时自动重试修复。现在会优先使用流式 chat completion，在 provider 不支持时自动回退到非流式，并把默认 AI 请求超时提高到更适合大任务的级别。对于内容很多的页面，它还可以在运行时按结构拆成少数几个 chunk，只重试失败的 chunk，再把通过校验的 chunk 结果合并回原始页面结果。加上 `--debug` 后，还会输出 task 加载、chunk 规划、请求发起、首个流式内容到达、响应完成、校验重试和结果写入这些阶段日志。`translate apply` 会把短 ID 映射回内部 `segmentId` 和 `sourceHash`，再次校验 schema，并且只接受 `sourceHash` 仍与当前源内容一致的翻译。
+`translate run` 会把 task、glossary 和校验错误一起喂给模型，在模型输出 JSON 非法或校验失败时自动重试修复。现在会优先使用流式 chat completion，在 provider 不支持时自动回退到非流式，并把默认 AI 请求超时提高到更适合大任务的级别。对于内容很多的页面，它还可以在运行时按结构拆成少数几个 chunk，只重试失败的 chunk，再把通过校验的 chunk 结果合并回原始页面结果。同一个 `concurrency` 配置会同时约束页面调度和 runtime chunk 请求：DocuMirror 会先用它拉满页面级并发，再把空闲请求槽位借给已启动页面的额外 chunk。持久化到磁盘的 task 和 result 文件仍然保持 page-based。加上 `--debug` 后，还会输出 task 加载、chunk 规划、请求发起、首个流式内容到达、响应完成、校验重试和结果写入这些阶段日志。`translate apply` 会把短 ID 映射回内部 `segmentId` 和 `sourceHash`，再次校验 schema，并且只接受 `sourceHash` 仍与当前源内容一致的翻译。
 
 当 task 中包含 `` `snap-always` `` 这类内联代码时，结果文本必须保留相同的 inline code span 与顺序，DocuMirror 才能把译文正确拆回原始 DOM 结构。
 
