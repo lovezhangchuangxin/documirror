@@ -14,7 +14,7 @@ export function createMirrorRepoPackageJson(
     description: `Translated mirror workspace for ${sourceUrl.origin} (${targetLocale})`,
     packageManager: "pnpm@10.22.0",
     engines: {
-      node: ">=20",
+      node: ">=22.14.0",
     },
     scripts: {
       "documirror:init": "documirror init",

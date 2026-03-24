@@ -32,7 +32,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.14.0
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
@@ -42,14 +42,18 @@ jobs:
       - name: Validate release candidate
         run: pnpm release:check
 
-      - name: Create release PR or publish
+      - name: Create release PR
+        id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm version-packages
-          publish: pnpm release
           commit: "chore(repo): version packages"
           title: "chore(repo): version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm with Trusted Publishing
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: pnpm release
+        env:
           NPM_CONFIG_PROVENANCE: "true"

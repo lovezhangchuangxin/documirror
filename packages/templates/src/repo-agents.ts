@@ -23,7 +23,7 @@ The goal is to keep a repeatable static-site translation pipeline:
 
 ## Requirements
 
-- Node.js >= 20
+- Node.js >= 22.14.0
 - pnpm >= 10
 - A globally available \`documirror\` CLI
 

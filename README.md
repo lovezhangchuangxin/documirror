@@ -147,7 +147,7 @@ After `init`, a mirror repository uses this working structure:
 
 ## Requirements
 
-- Node.js `>= 20`
+- Node.js `>= 22.14.0`
 - `pnpm` `10.x`
 
 ## Install
