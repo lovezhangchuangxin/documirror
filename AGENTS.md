@@ -43,7 +43,7 @@ Do not assume support for:
 
 ## Tech Stack
 
-- Node.js `>= 22.14.0`
+- Node.js `>= 24.0.0`
 - `pnpm` workspace
 - TypeScript
 - ESM-only packages
