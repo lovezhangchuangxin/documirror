@@ -119,6 +119,8 @@ export type RunTranslationsProgressEvent =
   | {
       type: "attempt";
       taskId: string;
+      pageTaskId?: string;
+      activityId?: string;
       attempt: number;
       maxAttempts: number;
       completed: number;
@@ -128,6 +130,8 @@ export type RunTranslationsProgressEvent =
   | {
       type: "attemptCompleted";
       taskId: string;
+      pageTaskId?: string;
+      activityId?: string;
       completed: number;
       total: number;
       chunk?: RunTaskChunkProgress;
@@ -162,6 +166,97 @@ export type RunSummary = {
 
 export type RunTranslationsOptions = {
   onDebug?: (message: string) => void;
+};
+
+export type AutoPipelineStage = "update" | "run" | "apply" | "build";
+
+export type AutoPipelineStageStatus = "ok" | "partial" | "failed" | "skipped";
+
+export type AutoUpdateStageSummary = {
+  stage: "update";
+  status: "ok" | "failed" | "skipped";
+  crawl?: CrawlSummary;
+  extract?: ExtractSummary;
+  plan?: PlanSummary;
+  error?: string;
+};
+
+export type AutoRunStageSummary = {
+  stage: "run";
+  status: AutoPipelineStageStatus;
+  summary?: RunSummary;
+  error?: string;
+};
+
+export type AutoApplyStageSummary = {
+  stage: "apply";
+  status: "ok" | "failed" | "skipped";
+  summary?: ApplySummary;
+  profile?: CommandProfile;
+  error?: string;
+};
+
+export type AutoBuildStageSummary = {
+  stage: "build";
+  status: "ok" | "failed" | "skipped";
+  summary?: BuildSummary;
+  profile?: CommandProfile;
+  error?: string;
+};
+
+export type AutoPipelineStageSummary =
+  | AutoUpdateStageSummary
+  | AutoRunStageSummary
+  | AutoApplyStageSummary
+  | AutoBuildStageSummary;
+
+export type AutoPipelineProgressEvent =
+  | {
+      type: "stageStarted";
+      stage: AutoPipelineStage;
+      stepIndex: number;
+      stepCount: number;
+    }
+  | {
+      type: "crawlProgress";
+      stage: "update";
+      progress: CrawlProgressUpdate;
+    }
+  | {
+      type: "runProgress";
+      stage: "run";
+      event: RunTranslationsProgressEvent;
+    }
+  | {
+      type: "stageCompleted";
+      stage: AutoPipelineStage;
+      stepIndex: number;
+      stepCount: number;
+      summary: AutoPipelineStageSummary;
+    }
+  | {
+      type: "stageFailed";
+      stage: AutoPipelineStage;
+      stepIndex: number;
+      stepCount: number;
+      summary: AutoPipelineStageSummary;
+    };
+
+export type RunAutoPipelineOptions = {
+  profile?: boolean;
+  onDebug?: (message: string) => void;
+};
+
+export type AutoPipelineSummary = {
+  ok: boolean;
+  update: AutoUpdateStageSummary;
+  run: AutoRunStageSummary;
+  apply: AutoApplyStageSummary;
+  build: AutoBuildStageSummary;
+  blockingError?: {
+    stage: AutoPipelineStage;
+    message: string;
+  };
 };
 
 export type DoctorSummary = {

@@ -144,7 +144,11 @@ export function mergeChunkDrafts(options: {
     originalIds: string[];
   }>;
 }): TranslationDraftResultFile {
-  const translations = options.chunkDrafts.flatMap(
+  const orderedChunkDrafts = [...options.chunkDrafts].sort(
+    (left, right) => left.chunk.chunkIndex - right.chunk.chunkIndex,
+  );
+
+  const translations = orderedChunkDrafts.flatMap(
     ({ draft, originalIds }, chunkIndex) => {
       if (draft.translations.length !== originalIds.length) {
         throw new Error(

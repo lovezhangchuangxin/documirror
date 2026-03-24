@@ -28,19 +28,27 @@ pnpm --filter @documirror/cli link --global
 
 ## Quick Start
 
-Refresh source state and generate translation tasks:
+Run the full automatic pipeline:
+
+\`\`\`bash
+pnpm documirror:auto
+\`\`\`
+
+This runs \`update\`, \`translate run\`, \`translate apply\`, and \`build\` in order. If some translation tasks fail, it still applies successful results and builds the site, but exits non-zero so the incomplete run stays visible to humans and CI.
+
+Refresh source state and generate translation tasks manually:
 
 \`\`\`bash
 pnpm documirror:update
 \`\`\`
 
-Run automatic translation:
+Large page tasks may be split into a few runtime chunks automatically, but the persisted task and result files remain page-based.
+
+Run automatic translation manually:
 
 \`\`\`bash
 pnpm documirror:translate:run
 \`\`\`
-
-Large page tasks may be split into a few runtime chunks automatically, but the persisted task and result files remain page-based.
 
 Debug a slow or stuck translation run:
 
@@ -64,6 +72,7 @@ pnpm documirror:build
 ## Common Commands
 
 \`\`\`bash
+pnpm documirror:auto
 pnpm documirror:update
 pnpm documirror:build
 pnpm documirror:status

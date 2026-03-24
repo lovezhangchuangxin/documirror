@@ -23,6 +23,8 @@ documirror translate plan
 documirror translate run
 \`\`\`
 
+   \`ai.concurrency\` is the only translation concurrency setting. DocuMirror uses it for page-level scheduling first, then lets runtime chunks borrow spare request slots only when fewer pages are active than the budget. Persisted task and result files still stay page-based.
+
    If a run looks stuck, rerun it with debug logs enabled:
 
 \`\`\`bash

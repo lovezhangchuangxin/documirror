@@ -19,12 +19,42 @@ DocuMirror is built for documentation teams that need:
 
 The current repository provides:
 
-- CLI commands for `init`, `config ai`, `crawl`, `extract`, `translate plan`, `translate run`, `translate verify`, `translate apply`, `build`, `update`, `doctor`, and `status`
+- CLI commands for `init`, `config ai`, `crawl`, `extract`, `translate plan`, `translate run`, `translate verify`, `translate apply`, `build`, `update`, `auto`, `doctor`, and `status`
 - a `pnpm` workspace split into crawler, parser, i18n, builder, OpenAI adapter, and CLI packages
 - segment-level incremental translation planning based on `sourceHash`
 - page-based translation task files with short item ids
 - automatic concurrent translation through the `openai` npm package against OpenAI-compatible APIs
 - local JSON/JSONL state stored under `.documirror/`
+
+## Quick Start
+
+Install the CLI:
+
+```bash
+npm install --global @documirror/cli
+```
+
+Initialize a mirror repository:
+
+```bash
+documirror init --repo ./my-mirror
+cd ./my-mirror
+```
+
+Run the common end-to-end workflow:
+
+```bash
+documirror auto
+```
+
+Inspect current state when needed:
+
+```bash
+documirror status
+documirror doctor
+```
+
+Use `auto` for the normal incremental flow. It runs `update`, `translate run`, `translate apply`, and `build` in order. If some translation tasks fail, it still applies successful results and builds the site, but exits non-zero so CI and operators can detect the incomplete run.
 
 ## Current Scope
 
@@ -56,13 +86,13 @@ The end-to-end workflow is:
 4. `translate plan`
    Export task JSON files only for new, stale, or missing translations, and refresh the queue manifest/checklist.
 5. `translate run`
-   Call the configured OpenAI-compatible API concurrently, validate the model output, and write verified results into `tasks/done/`. Use `--debug` to print per-task request lifecycle logs when a run appears stuck.
+   Call the configured OpenAI-compatible API concurrently, validate the model output, and write verified results into `tasks/done/`. `ai.concurrency` stays the only translation concurrency setting: page-level scheduling gets priority, and spare request slots can be borrowed by runtime chunks from the same page when fewer pages are active than the budget. Use `--debug` to print per-task request lifecycle logs when a run appears stuck.
 6. `translate apply`
    Re-validate and import accepted translation results into the translation store. Add `--profile` to print stage timings while diagnosing slow local imports.
 7. `build`
    Reinsert translated content into HTML and emit a translated static mirror under `site/`. Add `--profile` to print build-stage timings while diagnosing slow local builds. For sites whose client-side hydration reintroduces source-language text, you can opt into `build.runtimeReconciler`, which injects a runtime fallback that re-applies accepted body text and whitelisted attribute translations in the browser after DOM updates.
 
-For incremental updates, run `update`, then repeat translation, apply, and build as needed.
+For the common incremental workflow, run `auto`. For manual control or troubleshooting, run `update`, then repeat translation, apply, and build as needed.
 
 ## Repository Layout
 
@@ -166,7 +196,7 @@ pnpm link --global
 documirror --help
 ```
 
-## CLI Quick Start
+## CLI Reference
 
 After installing `@documirror/cli`, run the CLI with `documirror`.
 
@@ -252,6 +282,12 @@ Run the incremental pipeline:
 documirror update
 ```
 
+Run the full automatic pipeline with translate-run debug logs:
+
+```bash
+documirror auto --debug
+```
+
 Inspect repository health:
 
 ```bash
@@ -333,7 +369,7 @@ Result files include:
 - `completedAt`
 - translated items keyed by the short task `id`
 
-`translate run` uses the task file, glossary, and validation feedback to retry malformed or invalid model output automatically. It now prefers streamed chat completions when the provider supports them, falls back to non-streaming mode when needed, and uses a longer default AI request timeout. For large page tasks, it can split one page into a few structural runtime chunks, retry only the failing chunk, and merge the verified chunk results back into the original page result file. Add `--debug` to print stage logs such as task loading, chunk planning, request start, first streamed content, response completion, validation retry, and result writing. `translate apply` maps each short `id` back to internal `segmentId` and `sourceHash`, validates the result schema, and only accepts translations whose `sourceHash` still matches the current source segment.
+`translate run` uses the task file, glossary, and validation feedback to retry malformed or invalid model output automatically. It now prefers streamed chat completions when the provider supports them, falls back to non-streaming mode when needed, and uses a longer default AI request timeout. For large page tasks, it can split one page into a few structural runtime chunks, retry only the failing chunk, and merge the verified chunk results back into the original page result file. The same `concurrency` setting is reused for both page scheduling and runtime chunks: DocuMirror first fills the budget with pages, then lets already-active pages borrow any spare request slots for extra chunks. Persisted task and result files remain page-based. Add `--debug` to print stage logs such as task loading, chunk planning, request start, first streamed content, response completion, validation retry, and result writing. `translate apply` maps each short `id` back to internal `segmentId` and `sourceHash`, validates the result schema, and only accepts translations whose `sourceHash` still matches the current source segment.
 
 When a task item contains inline code such as `` `snap-always` ``, result text must preserve the same inline code spans exactly. DocuMirror can now reorder inline code nodes during assembly when the translation needs a different natural-language word order.
 

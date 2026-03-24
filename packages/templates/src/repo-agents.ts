@@ -62,19 +62,27 @@ pnpm --filter @documirror/cli link --global
 
 ## Standard Workflow
 
-1. Refresh source state and generate translation work:
+1. Run the preferred one-shot workflow:
+
+\`\`\`bash
+pnpm documirror:auto
+\`\`\`
+
+This runs \`update\`, \`translate run\`, \`translate apply\`, and \`build\` in order. If some translation tasks fail, it still applies successful results and builds the site, but exits non-zero.
+
+2. Refresh source state manually when you need finer control:
 
 \`\`\`bash
 pnpm documirror:update
 \`\`\`
 
-2. Review the generated queue:
+3. Review the generated queue:
 
 \`\`\`bash
 cat .documirror/tasks/QUEUE.md
 \`\`\`
 
-3. Run automatic translation:
+4. Run automatic translation:
 
 \`\`\`bash
 pnpm documirror:translate:run
@@ -82,13 +90,13 @@ pnpm documirror:translate:run
 
 When a \`pnpm documirror:*\` script needs extra CLI flags such as \`--task\`, keep the extra \`--\` so pnpm forwards those flags to the DocuMirror CLI.
 
-4. Verify a generated result if you need to inspect it:
+5. Verify a generated result if you need to inspect it:
 
 \`\`\`bash
 pnpm documirror:translate:verify -- --task <taskId>
 \`\`\`
 
-5. Apply verified results and rebuild the site:
+6. Apply verified results and rebuild the site:
 
 \`\`\`bash
 pnpm documirror:translate:apply
@@ -98,6 +106,7 @@ pnpm documirror:build
 ## Common Commands
 
 \`\`\`bash
+pnpm documirror:auto
 pnpm documirror:update
 pnpm documirror:crawl
 pnpm documirror:extract

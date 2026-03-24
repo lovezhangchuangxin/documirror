@@ -8,6 +8,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,6 +63,111 @@ function createAiConfig(): MirrorAiConfig {
   };
 }
 
+function buildDraftFromTask(task: {
+  taskId: string;
+  content: Array<{ id: string; text: string }>;
+}) {
+  return {
+    rawText: JSON.stringify({
+      schemaVersion: 2,
+      taskId: task.taskId,
+      translations: task.content.map((item) => ({
+        id: item.id,
+        translatedText: `${item.text} zh`,
+      })),
+    }),
+    draft: {
+      schemaVersion: 2 as const,
+      taskId: task.taskId,
+      translations: task.content.map((item) => ({
+        id: item.id,
+        translatedText: `${item.text} zh`,
+      })),
+    },
+  };
+}
+
+async function setupChunkedRunRepo(options: {
+  pageSlugs: string[];
+  concurrency: number;
+}): Promise<string> {
+  const repoDir = await mkdtemp(join(tmpdir(), "documirror-test-"));
+  createdDirs.push(repoDir);
+
+  await initMirrorRepository({
+    repoDir,
+    siteUrl: "https://docs.example.com",
+    targetLocale: "zh-CN",
+    ai: {
+      ...createAiConfig(),
+      concurrency: options.concurrency,
+      chunking: {
+        enabled: true,
+        strategy: "structural",
+        maxItemsPerChunk: 3,
+        softMaxSourceCharsPerChunk: 1_000,
+        hardMaxSourceCharsPerChunk: 2_000,
+      },
+    },
+    authToken: "secret-token",
+  });
+
+  const pages = Object.fromEntries(
+    await Promise.all(
+      options.pageSlugs.map(async (slug, index) => {
+        const snapshotName = index === 0 ? "index.html" : `${slug}.html`;
+        const outputPath = index === 0 ? "index.html" : `${slug}/index.html`;
+        const pageUrl =
+          index === 0
+            ? "https://docs.example.com/"
+            : `https://docs.example.com/${slug}/`;
+
+        await writeFile(
+          join(repoDir, ".documirror", "cache", "pages", snapshotName),
+          `<!doctype html><html><head><title>${slug}</title></head><body><h2>Install ${slug}</h2><p>Install the package ${slug}</p><p>Run the setup ${slug}</p><h2>Deploy ${slug}</h2><p>Deploy the site ${slug}</p><p>Check the output ${slug}</p></body></html>`,
+          "utf8",
+        );
+
+        return [
+          pageUrl,
+          {
+            url: pageUrl,
+            canonicalUrl: pageUrl,
+            status: 200,
+            contentType: "text/html",
+            snapshotPath: `.documirror/cache/pages/${snapshotName}`,
+            outputPath,
+            pageHash: `${slug}-hash`,
+            discoveredFrom: null,
+            assetRefs: [],
+          },
+        ] as const;
+      }),
+    ),
+  );
+
+  await writeFile(
+    join(repoDir, ".documirror", "state", "manifest.json"),
+    JSON.stringify(
+      {
+        sourceUrl: "https://docs.example.com/",
+        targetLocale: "zh-CN",
+        generatedAt: new Date().toISOString(),
+        pages,
+        assets: {},
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  await extractMirror(repoDir);
+  await planTranslations(repoDir);
+
+  return repoDir;
+}
+
 describe("documirror core pipeline", () => {
   beforeEach(() => {
     mockTranslateTaskWithOpenAi.mockReset();
@@ -113,11 +219,14 @@ describe("documirror core pipeline", () => {
     expect(mirrorPackage.scripts["documirror:translate:run"]).toBe(
       "documirror translate run",
     );
+    expect(mirrorPackage.scripts["documirror:auto"]).toBe("documirror auto");
     expect(mirrorPackage.scripts["documirror:config:ai"]).toBe(
       "documirror config ai",
     );
+    expect(mirrorReadme).toContain("pnpm documirror:auto");
     expect(mirrorReadme).toContain("pnpm documirror:translate:run");
     expect(mirrorAgents).toContain(".env");
+    expect(mirrorAgents).toContain("pnpm documirror:auto");
   });
 
   it("plans tasks, runs automatic translation, verifies, and applies results", async () => {
@@ -756,6 +865,125 @@ describe("documirror core pipeline", () => {
       { id: "5", translatedText: "部署站点" },
       { id: "6", translatedText: "检查输出" },
     ]);
+  });
+
+  it("uses spare concurrency slots for chunks when fewer pages are active than the budget", async () => {
+    const repoDir = await setupChunkedRunRepo({
+      pageSlugs: ["index", "guide"],
+      concurrency: 4,
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mockTranslateTaskWithOpenAi.mockImplementation(
+      async (options: {
+        task: {
+          taskId: string;
+          content: Array<{ id: string; text: string }>;
+        };
+      }) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await delay(20);
+        inFlight -= 1;
+        return buildDraftFromTask(options.task);
+      },
+    );
+
+    const summary = await runTranslations(repoDir, silentLogger);
+
+    expect(summary.successCount).toBe(2);
+    expect(summary.failureCount).toBe(0);
+    expect(maxInFlight).toBe(4);
+  });
+
+  it("keeps at most one in-flight chunk per page when page demand fills the concurrency budget", async () => {
+    const repoDir = await setupChunkedRunRepo({
+      pageSlugs: ["index", "guide", "api", "reference", "faq"],
+      concurrency: 4,
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const inFlightByPage = new Map<string, number>();
+    const maxConcurrentByPage = new Map<string, number>();
+
+    mockTranslateTaskWithOpenAi.mockImplementation(
+      async (options: {
+        task: {
+          taskId: string;
+          content: Array<{ id: string; text: string }>;
+        };
+      }) => {
+        const pageTaskId = options.task.taskId.replace(/__chunk_\d+$/u, "");
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+
+        const pageInFlight = (inFlightByPage.get(pageTaskId) ?? 0) + 1;
+        inFlightByPage.set(pageTaskId, pageInFlight);
+        maxConcurrentByPage.set(
+          pageTaskId,
+          Math.max(maxConcurrentByPage.get(pageTaskId) ?? 0, pageInFlight),
+        );
+
+        await delay(20);
+
+        inFlight -= 1;
+        const nextPageInFlight = (inFlightByPage.get(pageTaskId) ?? 1) - 1;
+        if (nextPageInFlight === 0) {
+          inFlightByPage.delete(pageTaskId);
+        } else {
+          inFlightByPage.set(pageTaskId, nextPageInFlight);
+        }
+
+        return buildDraftFromTask(options.task);
+      },
+    );
+
+    const summary = await runTranslations(repoDir, silentLogger);
+
+    expect(summary.successCount).toBe(5);
+    expect(summary.failureCount).toBe(0);
+    expect(maxInFlight).toBe(4);
+    expect(
+      [...maxConcurrentByPage.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([, value]) => value),
+    ).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it("writes one page-level run report with chunk details when parallel chunks fail", async () => {
+    const repoDir = await setupChunkedRunRepo({
+      pageSlugs: ["index"],
+      concurrency: 4,
+    });
+
+    mockTranslateTaskWithOpenAi.mockImplementation(
+      async (options: { task: { taskId: string } }) => {
+        await delay(20);
+        throw new Error(`simulated failure for ${options.task.taskId}`);
+      },
+    );
+
+    const summary = await runTranslations(repoDir, silentLogger);
+    expect(summary.successCount).toBe(0);
+    expect(summary.failureCount).toBe(1);
+
+    const [reportFile] = await readdir(
+      join(repoDir, "reports", "translation-run"),
+    );
+    const report = JSON.parse(
+      await readFile(
+        join(repoDir, "reports", "translation-run", reportFile),
+        "utf8",
+      ),
+    ) as {
+      chunks?: Array<{ chunkId: string }>;
+    };
+
+    expect(
+      report.chunks?.map((chunk) => chunk.chunkId.split("__chunk_")[1]),
+    ).toEqual(["1", "2"]);
   });
 
   it("reorders inline code nodes during site build when translation changes the natural word order", async () => {

@@ -51,10 +51,10 @@ describe("run translation progress formatting", () => {
       1_000,
     );
 
-    expect(formatRunProgressMessage(state, 31_000)).toContain(
+    expect(stripAnsi(formatRunProgressMessage(state, 31_000))).toContain(
       "0/3 complete, 0 succeeded, 0 failed, 1 running, 2 waiting",
     );
-    expect(formatRunProgressMessage(state, 31_000)).toContain(
+    expect(stripAnsi(formatRunProgressMessage(state, 31_000))).toContain(
       "model openai/gpt-4.1-mini, concurrency 2, timeout 60s, elapsed 31s",
     );
     expect(stripAnsi(formatRunProgressMessage(state, 31_000))).toContain(
@@ -103,6 +103,68 @@ describe("run translation progress formatting", () => {
     );
     expect(message).toContain('heading "Install the documirror');
     expect(message).toContain("waiting 4s");
+  });
+
+  it("tracks multiple active chunk attempts for the same page by activity id", () => {
+    const state = createRunProgressState(0);
+
+    applyRunProgressEvent(
+      state,
+      {
+        type: "queued",
+        total: 1,
+        concurrency: 2,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        requestTimeoutMs: 60_000,
+      },
+      0,
+    );
+    applyRunProgressEvent(
+      state,
+      {
+        type: "attempt",
+        taskId: "task_alpha",
+        pageTaskId: "task_alpha",
+        activityId: "task_alpha__chunk_1",
+        attempt: 1,
+        maxAttempts: 3,
+        completed: 0,
+        total: 1,
+        chunk: {
+          chunkIndex: 1,
+          chunkCount: 2,
+          itemStart: 1,
+          itemEnd: 40,
+        },
+      },
+      1_000,
+    );
+    applyRunProgressEvent(
+      state,
+      {
+        type: "attempt",
+        taskId: "task_alpha",
+        pageTaskId: "task_alpha",
+        activityId: "task_alpha__chunk_2",
+        attempt: 1,
+        maxAttempts: 3,
+        completed: 0,
+        total: 1,
+        chunk: {
+          chunkIndex: 2,
+          chunkCount: 2,
+          itemStart: 41,
+          itemEnd: 80,
+        },
+      },
+      1_500,
+    );
+
+    const message = stripAnsi(formatRunProgressMessage(state, 5_000));
+    expect(state.activeTasks.size).toBe(2);
+    expect(message).toContain("chunk 1/2, items 1-40");
+    expect(message).toContain("chunk 2/2, items 41-80");
   });
 
   it("tracks success rate by successful attempts when chunk retries happen", () => {
@@ -250,7 +312,7 @@ describe("run translation progress formatting", () => {
       5_000,
     );
 
-    const message = formatRunProgressMessage(state, 5_000);
+    const message = stripAnsi(formatRunProgressMessage(state, 5_000));
     expect(message).toContain(
       "1/1 complete, 1 succeeded, 0 failed, 0 running, 0 waiting",
     );

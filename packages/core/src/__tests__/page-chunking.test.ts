@@ -7,7 +7,11 @@ import type {
   TranslationTaskMappingFile,
 } from "@documirror/shared";
 
-import { createChunkTaskArtifacts, planPageChunks } from "../page-chunking";
+import {
+  createChunkTaskArtifacts,
+  mergeChunkDrafts,
+  planPageChunks,
+} from "../page-chunking";
 
 function createSegment(
   segmentId: string,
@@ -243,5 +247,70 @@ describe("page chunk planning", () => {
       "42",
       "43",
     ]);
+  });
+
+  it("merges chunk drafts by chunk index instead of completion order", () => {
+    const merged = mergeChunkDrafts({
+      taskId: "task_page",
+      chunkDrafts: [
+        {
+          chunk: {
+            chunkId: "task_page__chunk_2",
+            chunkIndex: 1,
+            chunkCount: 2,
+            isWholeTask: false,
+            itemStart: 3,
+            itemEnd: 4,
+            headingText: "Deploy",
+            content: [],
+            mappingItems: [],
+            originalIds: ["3", "4"],
+          },
+          draft: {
+            schemaVersion: 2,
+            taskId: "task_page__chunk_2",
+            translations: [
+              { id: "3", translatedText: "部署" },
+              { id: "4", translatedText: "检查输出" },
+            ],
+          },
+          originalIds: ["3", "4"],
+        },
+        {
+          chunk: {
+            chunkId: "task_page__chunk_1",
+            chunkIndex: 0,
+            chunkCount: 2,
+            isWholeTask: false,
+            itemStart: 1,
+            itemEnd: 2,
+            headingText: "Install",
+            content: [],
+            mappingItems: [],
+            originalIds: ["1", "2"],
+          },
+          draft: {
+            schemaVersion: 2,
+            taskId: "task_page__chunk_1",
+            translations: [
+              { id: "1", translatedText: "安装" },
+              { id: "2", translatedText: "安装该包" },
+            ],
+          },
+          originalIds: ["1", "2"],
+        },
+      ],
+    });
+
+    expect(merged).toEqual({
+      schemaVersion: 2,
+      taskId: "task_page",
+      translations: [
+        { id: "1", translatedText: "安装" },
+        { id: "2", translatedText: "安装该包" },
+        { id: "3", translatedText: "部署" },
+        { id: "4", translatedText: "检查输出" },
+      ],
+    });
   });
 });

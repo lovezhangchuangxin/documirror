@@ -1,10 +1,6 @@
 import fs from "fs-extra";
 
-import type {
-  Logger,
-  TranslationVerificationIssue,
-  TranslationVerificationReport,
-} from "@documirror/shared";
+import type { Logger, TranslationVerificationReport } from "@documirror/shared";
 import {
   createTimestamp,
   hashString,
@@ -16,7 +12,6 @@ import type {
   CandidateVerification,
   RunFailureReport,
 } from "../internal-types";
-import type { PlannedPageChunk } from "../../page-chunking";
 import { readJson, writeJson } from "../../storage";
 import {
   getRunFailureReportPath,
@@ -103,31 +98,7 @@ export async function writeVerificationReport(
 
 export async function writeRunFailureReport(
   paths: RepoPaths,
-  taskId: string,
-  attemptCount: number,
-  errors: TranslationVerificationIssue[],
-  resultPreview: string | undefined,
-  message: string,
-  chunk?: PlannedPageChunk,
+  report: RunFailureReport,
 ): Promise<void> {
-  const report: RunFailureReport = {
-    schemaVersion: 1,
-    taskId,
-    failedAt: createTimestamp(),
-    attemptCount,
-    chunk: chunk
-      ? {
-          chunkId: chunk.chunkId,
-          chunkIndex: chunk.chunkIndex + 1,
-          chunkCount: chunk.chunkCount,
-          itemStart: chunk.itemStart,
-          itemEnd: chunk.itemEnd,
-          headingText: chunk.headingText,
-        }
-      : undefined,
-    resultPreview,
-    errors,
-    message,
-  };
-  await writeJson(getRunFailureReportPath(paths, taskId), report);
+  await writeJson(getRunFailureReportPath(paths, report.taskId), report);
 }
