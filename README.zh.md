@@ -147,7 +147,7 @@ documirror doctor
 
 ## 要求
 
-- Node.js `>= 20`
+- Node.js `>= 22.14.0`
 - `pnpm` `10.x`
 
 ## 安装

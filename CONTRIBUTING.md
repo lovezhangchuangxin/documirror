@@ -6,7 +6,7 @@ Thanks for contributing to DocuMirror.
 
 Requirements:
 
-- Node.js `>= 20`
+- Node.js `>= 22.14.0`
 - pnpm `10.x`
 
 Install dependencies:
@@ -60,4 +60,5 @@ Maintainers generate versions with:
 pnpm version-packages
 ```
 
-Publishing is automated through GitHub Actions after the release PR is merged.
+Publishing is automated through GitHub Actions via npm Trusted Publishing
+(OIDC) after the release PR is merged.

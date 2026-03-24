@@ -43,7 +43,7 @@ Do not assume support for:
 
 ## Tech Stack
 
-- Node.js `>= 20`
+- Node.js `>= 22.14.0`
 - `pnpm` workspace
 - TypeScript
 - ESM-only packages
@@ -82,6 +82,7 @@ Do not assume support for:
 - Only `packages/cli` is intended to be published as the public npm package `@documirror/cli`.
 - All other workspace packages remain internal implementation packages and should stay `private` unless a task explicitly expands the public library surface.
 - Release builds may bundle internal `@documirror/*` packages into the CLI artifact, but the source workspace split should remain intact.
+- Release automation is expected to use GitHub Actions + npm Trusted Publishing (OIDC), not repository `NPM_TOKEN` fallback paths.
 
 ## Architectural Invariants
 
