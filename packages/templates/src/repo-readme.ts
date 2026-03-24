@@ -15,7 +15,7 @@ Detailed repository rules live in \`AGENTS.md\`. Translation-task-specific instr
 
 ## Requirements
 
-- Node.js >= 22.14.0
+- Node.js >= 24.0.0
 - pnpm >= 10
 - A globally available \`documirror\` CLI
 
